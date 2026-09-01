@@ -35,7 +35,7 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-08-31-ai-key-vault-word-queue-v3',
+        'build': '2026-09-01-word-pos-parser-v3.1',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
         'ai': 'deepseek-chat-completions',
@@ -1175,7 +1175,13 @@ $transcript''',
         ParsedWord(
           word: word,
           phonetic: _stringOr(map['phonetic'], '待生成'),
-          partOfSpeech: _stringOr(map['partOfSpeech'], '待识别'),
+          partOfSpeech: _stringOr(
+            map['partOfSpeech'] ??
+                map['part_of_speech'] ??
+                map['part-of-speech'] ??
+                map['pos'],
+            '待识别',
+          ),
           translation: _stringOr(map['translation'], '待 AI 翻译'),
           exampleEnglish: _stringOr(map['exampleEnglish'], ''),
           exampleChinese: _stringOr(map['exampleChinese'], ''),

@@ -52,4 +52,4 @@ dart test
 dart compile exe bin/server.dart -o release\server.exe
 ```
 
-新版 `GET /version` 应包含 `2026-08-31-ai-key-vault-word-queue-v3`。
+新版 `GET /version` 应包含 `2026-09-01-word-pos-parser-v3.1`。

@@ -144,7 +144,9 @@ class DeepSeekService implements AiService {
 You are an English learning assistant for Chinese learners.
 Return only valid JSON in the form {"items":[...]}.
 Keep the original order of the requested words.
+Every item must use exactly these keys: word, phonetic, partOfSpeech, translation, exampleEnglish, exampleChinese.
 For each word, provide a concise Chinese translation, IPA phonetic spelling, a short part-of-speech tag, one simple English example, and one Chinese example.
+Never return placeholder values such as 待识别, 待生成, or 待 AI 翻译.
 When unsure, choose the most common classroom meaning.
 Do not add markdown, code fences, or commentary.
 ''',
@@ -171,21 +173,40 @@ Do not add markdown, code fences, or commentary.
           final current = merged[normalized];
           if (current == null) continue;
           final updated = current.copyWith(
-            phonetic: _nonEmpty(item['phonetic']?.toString(), current.phonetic),
-            partOfSpeech: _nonEmpty(
-              item['partOfSpeech']?.toString(),
-              current.partOfSpeech,
+            phonetic: _resolvedField(
+              _field(item, const ['phonetic', 'ipa']),
+              current.phonetic,
+              const {'待生成'},
             ),
-            translation: _nonEmpty(
-              item['translation']?.toString(),
+            partOfSpeech: _resolvedField(
+              _field(item, const [
+                'partOfSpeech',
+                'part_of_speech',
+                'part-of-speech',
+                'pos',
+              ]),
+              current.partOfSpeech,
+              const {'待识别'},
+            ),
+            translation: _resolvedField(
+              _field(item, const ['translation', 'meaning']),
               current.translation,
+              const {'待 AI 翻译'},
             ),
             exampleEnglish: _nonEmpty(
-              item['exampleEnglish']?.toString(),
+              _field(item, const [
+                'exampleEnglish',
+                'example_english',
+                'example_en',
+              ]),
               current.exampleEnglish,
             ),
             exampleChinese: _nonEmpty(
-              item['exampleChinese']?.toString(),
+              _field(item, const [
+                'exampleChinese',
+                'example_chinese',
+                'example_zh',
+              ]),
               current.exampleChinese,
             ),
           );
@@ -358,6 +379,26 @@ Do not add markdown, code fences, or commentary.
   static String _nonEmpty(String? candidate, String fallback) {
     final value = candidate?.trim();
     if (value == null || value.isEmpty) return fallback;
+    return value;
+  }
+
+  static String? _field(Map<String, Object?> item, List<String> acceptedKeys) {
+    for (final key in acceptedKeys) {
+      final value = item[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  static String _resolvedField(
+    String? candidate,
+    String fallback,
+    Set<String> placeholders,
+  ) {
+    final value = candidate?.trim();
+    if (value == null || value.isEmpty || placeholders.contains(value)) {
+      return fallback;
+    }
     return value;
   }
 

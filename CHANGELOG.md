@@ -46,6 +46,12 @@
 
 ## Server
 
+### 2026-09-01-word-pos-parser-v3.1 — 2026-09-01
+
+- 修复 DeepSeek 返回 `part_of_speech`、`part-of-speech` 或 `pos` 时词性仍停留在“待识别”的问题。
+- 飞书录音摘要写入 Word Bank 时兼容相同的词性字段命名。
+- 明确 AI 返回字段契约，并拒绝把“待识别”等占位文本当成有效补全结果。
+
 ### 2026-08-31-ai-key-vault-word-queue-v3-fixed — 2026-09-01
 
 - 修复待识别/空词性的后台 AI 补全条件。
