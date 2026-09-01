@@ -1,0 +1,75 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+**/.env
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Release binaries are published as GitHub Release assets, not Git objects.
+*.apk
+*.exe
+*.dll
+*.zip
+*.pdb
+
+# Signing keys and production credentials must never enter version control.
+*.jks
+*.keystore
+*.pem
+*.pfx
+*.p12
+**/key.properties
+**/credentials.json
+**/secrets.json
+
+# Runtime databases, private notes, uploaded files, and generated server builds.
+/server/data/
+/server/build/
+/server/release/
+/deploy_package/bin/
+/deploy_package/lib/
+/deploy_package/config.yml
+
+# Local tunnel state can contain account- or host-specific identifiers.
+/.cloudflared/
+**/.cloudflared/

@@ -1,0 +1,25 @@
+# Use latest stable channel SDK.
+FROM dart:stable AS build
+
+# Resolve app dependencies.
+WORKDIR /app
+COPY pubspec.* ./
+RUN dart pub get
+
+# Copy app source code (except anything in .dockerignore) and AOT compile app.
+COPY . .
+RUN dart build cli --target bin/server.dart -o output
+
+# Build minimal serving image from AOT-compiled `/server`
+# and the pre-built AOT-runtime in the `/runtime/` directory of the base image.
+FROM scratch
+COPY --from=build /runtime/ /
+COPY --from=build /app/output/bundle/ /app/
+
+# Keep the database and the generated Obsidian vault under /app/data so the
+# production compose file can persist them with one bind mount.
+WORKDIR /app
+
+# Start server.
+EXPOSE 8080
+CMD ["/app/bin/server"]

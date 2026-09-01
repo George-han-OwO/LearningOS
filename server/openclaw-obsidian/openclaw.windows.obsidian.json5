@@ -1,0 +1,44 @@
+// Windows native OpenClaw configuration.
+// This is the absolute path on the remote Windows machine running OpenClaw.
+// The Flutter client does not need to access this path directly.
+// Do not use the Docker path `/home/node/.openclaw/wiki/main` here.
+{
+  plugins: {
+    entries: {
+      "memory-wiki": {
+        enabled: true,
+        config: {
+          vaultMode: "isolated",
+          vault: {
+            scope: "global",
+          path: "D:/AI-自学OS/server/data/obsidian-vault/1",
+            renderMode: "obsidian",
+          },
+          obsidian: {
+            enabled: true,
+            useOfficialCli: false,
+            vaultName: "AILearningOS",
+            openAfterWrites: false,
+          },
+          ingest: {
+            autoCompile: true,
+            maxConcurrentJobs: 1,
+            allowUrlIngest: false,
+          },
+          search: {
+            backend: "local",
+            corpus: "wiki",
+          },
+          context: {
+            includeCompiledDigestPrompt: true,
+          },
+          render: {
+            preserveHumanBlocks: true,
+            createBacklinks: true,
+            createDashboards: true,
+          },
+        },
+      },
+    },
+  },
+}

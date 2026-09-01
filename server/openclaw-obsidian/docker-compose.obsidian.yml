@@ -1,0 +1,32 @@
+# OpenClaw Compose overlay for the AILearningOS Obsidian vault.
+#
+# Run this file together with the official OpenClaw compose file from the
+# OpenClaw repository root:
+#
+#   docker compose -f docker-compose.yml \
+#     -f /path/to/AI-自学OS/server/openclaw-obsidian/docker-compose.obsidian.yml \
+#     up -d openclaw-gateway
+#
+# AI_STUDY_OBSIDIAN_VAULT_HOST_PATH must be an absolute path on the Docker
+# host, pointing to one user's vault, for example:
+#   /opt/ai-study-os/server/data/obsidian-vault/1
+#   D:/AI-自学OS/server/data/obsidian-vault/1
+
+services:
+  openclaw-gateway:
+    volumes:
+      - type: bind
+        source: ${AI_STUDY_OBSIDIAN_VAULT_HOST_PATH:?Set AI_STUDY_OBSIDIAN_VAULT_HOST_PATH to one user's Obsidian vault}
+        target: /home/node/.openclaw/wiki/main
+        read_only: false
+    environment:
+      OPENCLAW_TZ: ${OPENCLAW_TZ:-Asia/Shanghai}
+
+  # The official CLI sidecar shares the Gateway's network namespace. Mounting
+  # the same vault lets `openclaw wiki ...` inspect and compile the same files.
+  openclaw-cli:
+    volumes:
+      - type: bind
+        source: ${AI_STUDY_OBSIDIAN_VAULT_HOST_PATH:?Set AI_STUDY_OBSIDIAN_VAULT_HOST_PATH to one user's Obsidian vault}
+        target: /home/node/.openclaw/wiki/main
+        read_only: false

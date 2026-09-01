@@ -1,0 +1,45 @@
+// Merge this object into the OpenClaw openclaw.json.
+// The vault is deliberately global and isolated: it reads the mounted
+// AILearningOS Markdown files without importing private memory from other
+// OpenClaw agents. Keep useOfficialCli=false in a headless Docker container;
+// the optional Obsidian desktop CLI is not required for Markdown access.
+{
+  plugins: {
+    entries: {
+      "memory-wiki": {
+        enabled: true,
+        config: {
+          vaultMode: "isolated",
+          vault: {
+            scope: "global",
+            path: "/home/node/.openclaw/wiki/main",
+            renderMode: "obsidian",
+          },
+          obsidian: {
+            enabled: true,
+            useOfficialCli: false,
+            vaultName: "AILearningOS",
+            openAfterWrites: false,
+          },
+          ingest: {
+            autoCompile: true,
+            maxConcurrentJobs: 1,
+            allowUrlIngest: false,
+          },
+          search: {
+            backend: "local",
+            corpus: "wiki",
+          },
+          context: {
+            includeCompiledDigestPrompt: true,
+          },
+          render: {
+            preserveHumanBlocks: true,
+            createBacklinks: true,
+            createDashboards: true,
+          },
+        },
+      },
+    },
+  },
+}
