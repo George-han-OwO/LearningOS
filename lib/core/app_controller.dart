@@ -37,6 +37,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   LoginSecurityState _loginSecurity = const LoginSecurityState.clear();
   AiConnectionSettings _aiSettings = AiConnectionSettings.empty;
   ChatGptAuthState _chatGptAuth = const ChatGptAuthState.unavailable();
+  ChatGptCodexQuotaState _codexQuota =
+      const ChatGptCodexQuotaState.unavailable();
+  CodexHistorySyncState _codexHistory = const CodexHistorySyncState.idle();
   ConversationSyncState _conversationSyncState =
       ConversationSyncState.defaultState;
   Map<EmailProvider, EmailSyncState> _emailSyncStates = {
@@ -44,9 +47,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       provider: EmailSyncState.defaultFor(provider),
   };
   Timer? _conversationSyncTimer;
+  Timer? _codexRealtimeTimer;
   Timer? _pendingWordEnrichmentTimer;
   final Set<EmailProvider> _emailSyncBusy = {};
   bool _conversationSyncBusy = false;
+  bool _codexRealtimeBusy = false;
   bool _nightlySyncBusy = false;
   bool _conversationSyncBackendAvailable = true;
   bool _pendingWordEnrichmentBusy = false;
@@ -54,6 +59,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   PendingWordEnrichmentState _pendingWordEnrichmentState =
       PendingWordEnrichmentState.idle;
   bool _busy = false;
+  DateTime? _lastCodexQuotaRefreshAt;
 
   AppUser? get currentUser => _currentUser;
   List<StudyWord> get words => _words;
@@ -65,6 +71,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   LoginSecurityState get loginSecurity => _loginSecurity;
   AiConnectionSettings get aiSettings => _aiSettings;
   ChatGptAuthState get chatGptAuth => _chatGptAuth;
+  ChatGptCodexQuotaState get codexQuota => _codexQuota;
+  CodexHistorySyncState get codexHistory => _codexHistory;
   ConversationSyncState get conversationSyncState => _conversationSyncState;
   PendingWordEnrichmentState get pendingWordEnrichmentState =>
       _pendingWordEnrichmentState;
@@ -86,7 +94,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _conversationSyncTimer?.cancel();
+    _codexRealtimeTimer?.cancel();
     _pendingWordEnrichmentTimer?.cancel();
+    unawaited(_chatGptAuthService.dispose());
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -113,6 +123,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await _reloadLearningData();
         _startConversationSyncTimer();
         _startPendingWordEnrichmentTimer();
+        _startCodexRealtimeBridge();
       }
     } catch (_) {
       _currentUser = null;
@@ -171,6 +182,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await _reloadLearningData();
         _startConversationSyncTimer();
         _startPendingWordEnrichmentTimer();
+        _startCodexRealtimeBridge(fullRefresh: true);
         return null;
       } catch (error) {
         if (challenge != null) {
@@ -187,10 +199,13 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<String?> disconnectChatGpt() async {
     return _guard(() async {
+      _stopCodexRealtimeBridge();
       await _chatGptAuthService.logout();
       _chatGptAuth = _chatGptAuthService.supported
           ? const ChatGptAuthState.signedOut()
           : const ChatGptAuthState.unavailable();
+      _codexQuota = const ChatGptCodexQuotaState.unavailable();
+      _codexHistory = const CodexHistorySyncState.idle();
       notifyListeners();
       return null;
     });
@@ -229,6 +244,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _reloadLearningData();
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
+      _startCodexRealtimeBridge();
       return null;
     });
   }
@@ -261,6 +277,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _reloadLearningData();
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
+      _startCodexRealtimeBridge();
       return null;
     });
   }
@@ -289,6 +306,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _reloadLearningData();
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
+      _startCodexRealtimeBridge();
       return null;
     });
   }
@@ -298,6 +316,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _conversationSyncTimer = null;
     _pendingWordEnrichmentTimer?.cancel();
     _pendingWordEnrichmentTimer = null;
+    _stopCodexRealtimeBridge();
     await _database.clearSession();
     _currentUser = null;
     _words = const [];
@@ -305,6 +324,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _captures = const [];
     _todayStats = const TodayStats.empty();
     _conversationSyncState = ConversationSyncState.defaultState;
+    _codexHistory = const CodexHistorySyncState.idle();
     _conversationSyncBackendAvailable = true;
     _pendingWordBackendAvailable = true;
     _pendingWordEnrichmentState = PendingWordEnrichmentState.idle;
@@ -597,7 +617,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
       final analysis = await _aiService.analyzeConversation(
         settings: _aiSettings,
-        transcript: candidate.transcript,
+        transcript: _transcriptForAi(candidate.transcript),
       );
       if (analysis.warning != null) throw StateError(analysis.warning!);
       final concepts = analysis.learnedConcepts.isEmpty
@@ -960,6 +980,104 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  void _startCodexRealtimeBridge({bool fullRefresh = false}) {
+    _codexRealtimeTimer?.cancel();
+    _codexRealtimeTimer = null;
+    if (_currentUser == null ||
+        !_chatGptAuth.authenticated ||
+        !_chatGptAuthService.supported) {
+      return;
+    }
+    unawaited(
+      _refreshCodexRealtimeBridge(fullRefresh: fullRefresh, refreshQuota: true),
+    );
+    _codexRealtimeTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_refreshCodexRealtimeBridge()),
+    );
+  }
+
+  void _stopCodexRealtimeBridge() {
+    _codexRealtimeTimer?.cancel();
+    _codexRealtimeTimer = null;
+  }
+
+  Future<String?> refreshCodexConnection() async {
+    if (!_chatGptAuth.authenticated) return '请先登录 ChatGPT。';
+    await _refreshCodexRealtimeBridge(fullRefresh: true, refreshQuota: true);
+    return _codexHistory.lastError ?? _codexQuota.message;
+  }
+
+  Future<void> _refreshCodexRealtimeBridge({
+    bool fullRefresh = false,
+    bool refreshQuota = false,
+  }) async {
+    final user = _currentUser;
+    if (user == null || !_chatGptAuth.authenticated || _codexRealtimeBusy) {
+      return;
+    }
+    _codexRealtimeBusy = true;
+    final now = DateTime.now();
+    try {
+      final quotaAge = _lastCodexQuotaRefreshAt == null
+          ? null
+          : now.difference(_lastCodexQuotaRefreshAt!);
+      if (refreshQuota ||
+          quotaAge == null ||
+          quotaAge >= const Duration(minutes: 1)) {
+        try {
+          _codexQuota = await _chatGptAuthService.readQuota();
+          _lastCodexQuotaRefreshAt = now;
+        } catch (error) {
+          _codexQuota = ChatGptCodexQuotaState.unavailable('额度读取失败：$error');
+        }
+      }
+
+      final batch = await _chatGptAuthService.readCodexHistory(
+        fullRefresh: fullRefresh,
+      );
+      if (batch.changedConversations.isNotEmpty) {
+        await _database.ingestConversationInbox(
+          userId: user.id,
+          conversations: [
+            for (final conversation in batch.changedConversations)
+              ChatGptConversationSnapshot(
+                externalId: conversation.externalId,
+                title: conversation.title,
+                transcript: conversation.transcript,
+                updatedAt: conversation.updatedAt,
+                isComplete: conversation.isComplete,
+              ),
+          ],
+        );
+      }
+      _codexHistory = CodexHistorySyncState(
+        running: true,
+        folderName: batch.folderName,
+        threadCount: batch.totalThreads,
+        lastReadAt: batch.checkedAt,
+      );
+    } catch (error) {
+      _codexHistory = CodexHistorySyncState(
+        running: true,
+        folderName: _codexHistory.folderName,
+        threadCount: _codexHistory.threadCount,
+        lastReadAt: _codexHistory.lastReadAt,
+        lastError: 'Codex OSS 会话读取失败：$error',
+      );
+    } finally {
+      _codexRealtimeBusy = false;
+      notifyListeners();
+    }
+  }
+
+  static String _transcriptForAi(String transcript) {
+    const maxCharacters = 100000;
+    if (transcript.length <= maxCharacters) return transcript;
+    return '[Earlier messages omitted for AI analysis.]\n\n'
+        '${transcript.substring(transcript.length - maxCharacters)}';
+  }
+
   void _startConversationSyncTimer({bool runMissedNightly = true}) {
     _conversationSyncTimer?.cancel();
     _conversationSyncTimer = null;
@@ -1068,6 +1186,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed && _currentUser != null) {
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
+      _startCodexRealtimeBridge(fullRefresh: true);
     }
   }
 

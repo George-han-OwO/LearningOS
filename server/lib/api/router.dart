@@ -545,9 +545,9 @@ class ApiRouter {
       return _json(conversations.map((item) => item.toMap()).toList());
     });
 
-    // A ChatGPT web companion/bridge posts snapshots here. It must include
-    // the newest conversation as well as the previous one so the client can
-    // deliberately select index 1 and avoid an in-progress latest chat.
+    // The local Codex App Server bridge (or a trusted web companion) posts
+    // snapshots here. It includes the newest conversation and its predecessor
+    // so the client can avoid summarizing a still-streaming latest chat.
     router.post('/api/conversation-sync/<userId>/inbox', (
       Request request,
       String userId,

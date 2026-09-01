@@ -7,7 +7,7 @@
 ## 核心规则
 
 1. “自动安排生成笔记”开关默认关闭。关闭时不启动高频循环，而是在设备本地时间每天 23:00 统一检查并生成一次；用户打开开关后才启动 15 分钟循环。用户也可以在“笔记”页或“我的与设置”中立即检查一次。
-2. ChatGPT Bridge 每次应至少提交最新的两条会话快照，并保留 `is_complete` 状态。
+2. Windows 端 Codex App Server 每次会把 `OSS` 工作区中发生变化的会话快照写入收件箱，并保留 `is_complete` 状态；若使用其他受信任采集端，也至少提交最新的两条会话快照。
 3. ChatGPT 按 `updated_at DESC` 排序后只取索引为 `1` 的会话，也就是“最新一条的上一条”。
 4. ChatGPT 候选会话必须 `is_complete = true`；否则本轮只记录“等待完成”，不生成笔记。
 5. Outlook 和 QQ 邮箱按邮件 ID 增量处理，只总结未处理且已完整接收的邮件。
@@ -19,7 +19,7 @@
 
 | 来源 | 同步规则 | 接入方式 |
 | --- | --- | --- |
-| ChatGPT | 只处理最新会话的上一条，且必须已完成 | ChatGPT Web Bridge |
+| Codex OSS | 只处理最新会话的上一条，且必须已完成 | 官方 Codex App Server（`thread/list` + `thread/turns/list`） |
 | Outlook | 增量处理未总结的完整邮件 | OAuth / Microsoft Graph Bridge |
 | QQ 邮箱 | 增量处理未总结的完整邮件 | IMAP / QQ 邮箱 Bridge |
 
@@ -27,9 +27,9 @@ Outlook 和 QQ 邮箱不会把密码交给摘要应用。Outlook 应通过 OAuth
 
 ## 为什么不直接读取 ChatGPT 历史
 
-ChatGPT 登录态只能用于官方授权流程，应用不读取或保存 ChatGPT 密码、Cookie、access token 或 refresh token。当前架构因此把“读取 ChatGPT 会话”隔离为 Bridge：Bridge 负责把用户授权范围内的会话快照写入服务端收件箱，学习应用只负责选择、总结和归档。
+ChatGPT 登录态只能用于官方授权流程，应用不读取或保存 ChatGPT 密码、Cookie、access token 或 refresh token。Windows 端由 Codex App Server 负责读取本机 `OSS` 工作区的持久化线程；应用只接收经过过滤的用户消息和助手正文，排除推理、命令、工具输出与文件变更，再写入服务端收件箱供选择、总结和归档。该能力读取的是 Codex 工作区线程，不等同于读取 chatgpt.com 的全部网页聊天。
 
-ChatGPT Bridge 的写入接口：
+Codex 会话收件箱的写入接口（也兼容其他受信任采集端）：
 
 ```text
 POST /api/conversation-sync/{userId}/inbox
@@ -58,7 +58,7 @@ POST /api/conversation-sync/{userId}/inbox
 }
 ```
 
-收件箱只作为短期同步缓冲区；应用不会因为最新会话仍在生成而提前总结它。当前客户端在前台运行时启动 15 分钟定时器；移动端真正的后台定时执行还需要接入系统 WorkManager/后台任务能力。
+收件箱只作为短期同步缓冲区；应用不会因为最新会话仍在生成而提前总结它。Windows 客户端前台每 2 秒增量读取 Codex 线程，笔记生成仍遵循 15 分钟/23:00 调度；移动端真正的后台定时执行还需要接入系统 WorkManager/后台任务能力。
 
 邮箱 Bridge 的写入接口：
 

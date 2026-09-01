@@ -985,7 +985,6 @@ class AppDatabase {
       where: 'user_id = ?',
       whereArgs: [userId],
       orderBy: 'updated_at DESC, id DESC',
-      limit: 20,
     );
     return rows
         .map(ChatGptConversationSnapshot.fromMap)
@@ -999,10 +998,9 @@ class AppDatabase {
     var accepted = 0;
     final receivedAt = DateTime.now().toIso8601String();
     await _database.transaction((transaction) async {
-      for (final conversation in conversations.take(20)) {
+      for (final conversation in conversations) {
         if (conversation.externalId.trim().isEmpty ||
-            conversation.transcript.trim().isEmpty ||
-            conversation.transcript.length > 100000) {
+            conversation.transcript.trim().isEmpty) {
           continue;
         }
         await transaction.insert(

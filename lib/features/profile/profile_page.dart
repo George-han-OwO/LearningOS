@@ -114,7 +114,7 @@ class ProfilePage extends StatelessWidget {
                     icon: CupertinoIcons.chat_bubble_2_fill,
                     title: 'ChatGPT 登录',
                     subtitle: controller.chatGptAuth.authenticated
-                        ? '已登录 · chatgpt5.5 · 词库补全优先走 Codex 额度'
+                        ? _codexConnectionSubtitle(controller)
                         : controller.chatGptAuth.available
                         ? '未登录 · 通过官方浏览器流程连接 chatgpt5.5'
                         : '当前设备不可用 · Windows 需安装 Codex，Android 需受信任网关',
@@ -318,6 +318,35 @@ class ProfilePage extends StatelessWidget {
     return '${local.month}/${local.day} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 
+  static String _codexConnectionSubtitle(AppController controller) {
+    final history = controller.codexHistory;
+    final remaining = controller.codexQuota.primaryRemainingPercent;
+    final quota = remaining == null
+        ? '额度读取中'
+        : '短周期剩余 ${remaining.toStringAsFixed(0)}%';
+    if (history.lastError != null) return '$quota · OSS 读取需重试';
+    return '$quota · OSS ${history.threadCount} 条实时读取';
+  }
+
+  static String _quotaWindowLabel(int? minutes) {
+    if (minutes == null) return '额度周期';
+    if (minutes % (24 * 60) == 0) return '${minutes ~/ (24 * 60)} 天额度';
+    if (minutes % 60 == 0) return '${minutes ~/ 60} 小时额度';
+    return '$minutes 分钟额度';
+  }
+
+  static String _quotaLine({
+    required int? minutes,
+    required double? used,
+    required DateTime? resetsAt,
+  }) {
+    final label = _quotaWindowLabel(minutes);
+    if (used == null) return '$label：等待 Codex 返回';
+    final remaining = (100 - used).clamp(0, 100);
+    final reset = resetsAt == null ? '' : ' · ${_timeLabel(resetsAt)} 重置';
+    return '$label：已用 ${used.toStringAsFixed(0)}% · 剩余 ${remaining.toStringAsFixed(0)}%$reset';
+  }
+
   AppGroupRow _emailSyncRow(
     BuildContext context,
     AppController controller,
@@ -430,7 +459,7 @@ class ProfilePage extends StatelessWidget {
                         children: [
                           const Expanded(
                             child: Text(
-                              'ChatGPT 登录 · chatgpt5.5',
+                              'ChatGPT / Codex',
                               style: AppTextStyles.title,
                             ),
                           ),
@@ -443,8 +472,8 @@ class ProfilePage extends StatelessWidget {
                       const SizedBox(height: 12),
                       Text(
                         controller.chatGptAuth.authenticated
-                            ? '当前已通过官方 ChatGPT 流程登录。后续词库联网补全会优先走 Codex 额度；Codex 负责保存和刷新授权，应用只保存本地账号关联信息。'
-                            : '使用官方 ChatGPT 浏览器登录流程接入 chatgpt5.5，不会要求你把 ChatGPT 密码或 token 粘贴到应用里。',
+                            ? '已接入 ChatGPT 订阅对应的 Codex 额度，并通过官方 App Server 增量读取本机 OSS 工作区会话。应用不读取或保存密码、token、推理、命令及工具输出。'
+                            : '使用官方 ChatGPT 浏览器登录流程接入 Codex 订阅额度，不会要求你把 ChatGPT 密码或 token 粘贴到应用里。',
                         style: AppTextStyles.body.copyWith(
                           color: const Color(0xE6FFFFFF),
                         ),
@@ -470,6 +499,87 @@ class ProfilePage extends StatelessWidget {
                               ),
                             ],
                           ),
+                        ),
+                        const SizedBox(height: 12),
+                        AppCard(
+                          color: AppPalette.softSurface,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Codex 额度 · ${controller.codexQuota.planType ?? controller.chatGptAuth.planLabel}',
+                                style: AppTextStyles.body.copyWith(
+                                  color: const Color(0xFFFFFFFF),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _quotaLine(
+                                  minutes: controller
+                                      .codexQuota
+                                      .primaryWindowMinutes,
+                                  used:
+                                      controller.codexQuota.primaryUsedPercent,
+                                  resetsAt:
+                                      controller.codexQuota.primaryResetsAt,
+                                ),
+                                style: AppTextStyles.caption.copyWith(
+                                  color: const Color(0xD9FFFFFF),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _quotaLine(
+                                  minutes: controller
+                                      .codexQuota
+                                      .secondaryWindowMinutes,
+                                  used: controller
+                                      .codexQuota
+                                      .secondaryUsedPercent,
+                                  resetsAt:
+                                      controller.codexQuota.secondaryResetsAt,
+                                ),
+                                style: AppTextStyles.caption.copyWith(
+                                  color: const Color(0xD9FFFFFF),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        AppCard(
+                          color: controller.codexHistory.lastError == null
+                              ? AppPalette.greenSoft
+                              : AppPalette.orangeSoft,
+                          child: Text(
+                            controller.codexHistory.lastError ??
+                                'OSS 会话实时读取已运行 · ${controller.codexHistory.threadCount} 条 · ${controller.codexHistory.lastReadAt == null ? '正在首次读取' : '上次 ${_timeLabel(controller.codexHistory.lastReadAt!)}'}',
+                            style: AppTextStyles.body.copyWith(
+                              color: const Color(0xFFFFFFFF),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        AppPrimaryButton(
+                          label: '刷新额度与 OSS 会话',
+                          icon: CupertinoIcons.arrow_2_circlepath,
+                          fullWidth: true,
+                          onPressed: controller.busy
+                              ? null
+                              : () async {
+                                  final error = await controller
+                                      .refreshCodexConnection();
+                                  if (!pageContext.mounted) return;
+                                  await showAppMessage(
+                                    pageContext,
+                                    title: error == null ? '刷新完成' : '刷新未完成',
+                                    message:
+                                        error ?? 'Codex 额度与 OSS 会话记录已经重新读取。',
+                                    tone: error == null
+                                        ? AppMessageTone.success
+                                        : AppMessageTone.warning,
+                                  );
+                                },
                         ),
                         const SizedBox(height: 18),
                         AppPrimaryButton(
@@ -589,8 +699,9 @@ class ProfilePage extends StatelessWidget {
                           apiKey: currentSettings.apiKey,
                           model: currentSettings.model,
                         );
-                        if (!sheetContext.mounted || !pageContext.mounted)
+                        if (!sheetContext.mounted || !pageContext.mounted) {
                           return;
+                        }
                         setModalState(() => saving = false);
                         if (error != null) {
                           await showAppMessage(
@@ -617,8 +728,9 @@ class ProfilePage extends StatelessWidget {
                         final error = await controller.testAiConnection(
                           settings: currentSettings,
                         );
-                        if (!sheetContext.mounted || !pageContext.mounted)
+                        if (!sheetContext.mounted || !pageContext.mounted) {
                           return;
+                        }
                         setModalState(() => testing = false);
                         await showAppMessage(
                           pageContext,

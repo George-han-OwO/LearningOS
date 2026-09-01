@@ -1,6 +1,6 @@
 # AILearningOS · ChatGPT 自动笔记
 
-一个面向 Android 与 Windows 的本地优先、双语 AI 辅助学习系统。产品核心是个人信息自动摘要：默认每天 23:00 统一生成一次；用户打开“自动安排生成笔记”开关后才改为每 15 分钟检查 ChatGPT、Outlook、QQ 邮箱，生成摘要并自动分类写入服务器 Obsidian 知识库。飞书录音转写按 webhook 事件即时处理；ChatGPT 仍只总结按更新时间排序后的倒数第二条、且已经生成完成的对话。主界面只保留今日 Note、Word Bank 和“用户名 Library”三个核心入口。界面使用 Flutter 的 Cupertino 组件和自定义 Apple 风格设计系统，不依赖 Material UI。
+一个面向 Android 与 Windows 的本地优先、双语 AI 辅助学习系统。产品核心是个人信息自动摘要：Windows 端通过官方 Codex App Server 接入 ChatGPT 订阅额度，并以前台 2 秒增量检查实时读取本机 `OSS` 工作区的 Codex 会话；摘要默认每天 23:00 统一生成，用户打开“自动安排生成笔记”后改为每 15 分钟生成。飞书录音转写按 webhook 事件即时处理；Codex 会话仍只总结按更新时间排序后的倒数第二条、且已经生成完成的对话。主界面只保留今日 Note、Word Bank 和“用户名 Library”三个核心入口。界面使用 Flutter 的 Cupertino 组件和自定义 Apple 风格设计系统，不依赖 Material UI。
 
 ## 当前可用功能
 
@@ -14,8 +14,10 @@
 - Word Bank 英文提取、大小写归一、去重、搜索和表格/卡片视图
 - 内置基础词典的中文释义、音标与双语例句；未知词保留“待 AI 翻译”状态
 - DeepSeek 联网补全：可在本机填写 API Key 后，用 `DeepSeek-V4-flash` 为词库补齐音标、词性、释义与双语例句
+- ChatGPT Codex 订阅额度：通过官方 `account/rateLimits/read` 读取短周期/长周期已用比例、剩余比例和重置时间；设置页每分钟刷新，也可手动刷新
+- Codex OSS 会话实时读取：通过官方 `thread/list` 与 `thread/turns/list` 在应用前台每 2 秒增量检查；只同步用户消息和助手正文，不采集推理、命令、工具输出或文件变更
 - 输入关键信息，自动整理中英双语笔记。拥有新建笔记和 Markdown 导出
-- 自动安排生成笔记：默认每天 23:00 统一检查；打开高频开关后才每 15 分钟检查 Bridge 收件箱。ChatGPT 只处理最新一条的上一条已完成对话；自动生成中英双语摘要、学习概念和待复习行动，并将可复习英文词自动加入 Word Bank
+- 自动安排生成笔记：默认每天 23:00 统一检查；打开高频开关后才每 15 分钟检查同步收件箱。Codex 只处理最新一条的上一条已完成对话；自动生成中英双语摘要、学习概念和待复习行动，并将可复习英文词自动加入 Word Bank
 - 对话同步状态：记录上次检查、上次已处理会话、跳过未完成会话和错误原因，避免重复生成笔记
 - Outlook / QQ 邮箱自动摘要：按邮件 ID 增量处理完整邮件，生成摘要、分类和标签
 - 飞书录音豆接入：服务器提供录音完成事件/转写文本入口，调用 DeepSeek 生成摘要、学习要点和词汇，并写入今日 Note、Word Bank 与 Obsidian，见 [`server/飞书录音豆接入.md`](server/飞书录音豆接入.md)
@@ -35,12 +37,12 @@
 ## 尚未接入
 
 - 图片 OCR、错题自动切分与书页摘要
-- ChatGPT Web Bridge 的具体浏览器采集端（服务端收件箱接口已经提供）
+- ChatGPT 网页版普通聊天的浏览器采集端（Codex 的 `OSS` 项目会话已经接入；这不等同于读取 chatgpt.com 的全部网页聊天）
 - Outlook OAuth / Microsoft Graph Bridge 和 QQ IMAP / 授权码 Bridge 的具体采集端（服务端邮箱收件箱接口已经提供）
 - Android 进程被系统挂起时的真正后台 15 分钟/23:00 定时任务（当前由客户端进程调度；需要接入系统 WorkManager/后台任务能力才能保证进程被系统挂起时仍执行）
 - 跨设备同步
 
-图片 OCR 仍未接入。Windows 端的 ChatGPT 登录已经接入官方 Codex App Server 浏览器授权流程；App 只拿到账号元数据，绝不读取或保存 ChatGPT 密码/token。Android 端需要部署受信任的 Codex 网关后才能使用订阅额度，不能在 APK 内伪造或抓取 ChatGPT 登录态。自动摘要的 ChatGPT/邮箱读取采用 Bridge 收件箱设计，自动分类结果写入服务器 Obsidian，详见 [产品定义-ChatGPT自动笔记.md](产品定义-ChatGPT自动笔记.md)。Claw 与 Obsidian 的服务器部署步骤详见 [server/openclaw-obsidian/README.md](server/openclaw-obsidian/README.md)。
+图片 OCR 仍未接入。Windows 端的 ChatGPT 登录、Codex 额度与本机 Codex 会话历史均通过官方 Codex App Server 完成；App 只拿账号元数据、额度窗口和经过过滤的用户/助手消息，绝不读取或保存 ChatGPT 密码/token。Android 端需要部署受信任的 Codex 网关后才能使用订阅额度，不能在 APK 内伪造或抓取 ChatGPT 登录态。自动分类结果写入服务器 Obsidian，详见 [产品定义-ChatGPT自动笔记.md](产品定义-ChatGPT自动笔记.md)。Claw 与 Obsidian 的服务器部署步骤详见 [server/openclaw-obsidian/README.md](server/openclaw-obsidian/README.md)。
 
 ## 运行与验证
 
@@ -49,6 +51,7 @@ flutter pub get
 flutter analyze
 flutter test
 flutter run -d windows
+dart run tool/verify_codex_bridge.dart
 ```
 
 客户端服务地址默认是 `https://os.georgehan0514.top`，本地开发可覆盖：
@@ -57,6 +60,14 @@ flutter run -d windows
 flutter run -d windows --dart-define=AI_STUDY_OS_API_URL=http://127.0.0.1:8080
 flutter run -d emulator-5554 --dart-define=AI_STUDY_OS_API_URL=http://10.0.2.2:8080
 ```
+
+Codex 会话默认匹配工作目录名为 `OSS` 的线程。如果有多个同名目录，建议在 Windows 启动时固定完整路径：
+
+```powershell
+flutter run -d windows --dart-define="AI_STUDY_OS_CODEX_SYNC_CWD=C:\Users\GeorgeGao\Documents\ChatGPT\OSS"
+```
+
+`tool/verify_codex_bridge.dart` 只输出安全的连接状态、额度剩余比例和可读线程数量，不输出账号凭据或聊天正文。
 
 启动服务端：
 
@@ -68,15 +79,15 @@ dart run bin/server.dart
 
 Android Release APK：
 
-`release/AILearningOS-android-v1.3.1.apk`
+`release/AILearningOS-android-v1.3.2.apk`
 
 SHA-256：
 
-`51FAED087E5945FD24F1C4B4CDDFE59F0FDADAD066524C1C32A05336579CE233`
+`6D1AA9C60C3FD7D5AC4326EF10D462F29CDE2E1377D982879A041162EA4C39D0`
 
 大小：
 
-`49,201,236` bytes（约 `46.9` MiB）
+`49,201,232` bytes（约 `46.9` MiB）
 
 ## Windows 构建环境
 

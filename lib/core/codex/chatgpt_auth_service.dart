@@ -65,6 +65,105 @@ class ChatGptLoginChallenge {
   bool get isDeviceCodeFlow => verificationUrl != null && userCode != null;
 }
 
+class ChatGptCodexQuotaState {
+  const ChatGptCodexQuotaState({
+    required this.available,
+    this.planType,
+    this.primaryUsedPercent,
+    this.primaryWindowMinutes,
+    this.primaryResetsAt,
+    this.secondaryUsedPercent,
+    this.secondaryWindowMinutes,
+    this.secondaryResetsAt,
+    this.message,
+    this.updatedAt,
+  });
+
+  const ChatGptCodexQuotaState.unavailable([this.message])
+    : available = false,
+      planType = null,
+      primaryUsedPercent = null,
+      primaryWindowMinutes = null,
+      primaryResetsAt = null,
+      secondaryUsedPercent = null,
+      secondaryWindowMinutes = null,
+      secondaryResetsAt = null,
+      updatedAt = null;
+
+  final bool available;
+  final String? planType;
+  final double? primaryUsedPercent;
+  final int? primaryWindowMinutes;
+  final DateTime? primaryResetsAt;
+  final double? secondaryUsedPercent;
+  final int? secondaryWindowMinutes;
+  final DateTime? secondaryResetsAt;
+  final String? message;
+  final DateTime? updatedAt;
+
+  double? get primaryRemainingPercent => primaryUsedPercent == null
+      ? null
+      : (100 - primaryUsedPercent!).clamp(0, 100);
+  double? get secondaryRemainingPercent => secondaryUsedPercent == null
+      ? null
+      : (100 - secondaryUsedPercent!).clamp(0, 100);
+}
+
+class CodexConversationRecord {
+  const CodexConversationRecord({
+    required this.externalId,
+    required this.title,
+    required this.transcript,
+    required this.updatedAt,
+    required this.isComplete,
+    required this.cwd,
+  });
+
+  final String externalId;
+  final String title;
+  final String transcript;
+  final DateTime updatedAt;
+  final bool isComplete;
+  final String cwd;
+}
+
+class CodexHistoryBatch {
+  const CodexHistoryBatch({
+    required this.folderName,
+    required this.totalThreads,
+    required this.changedConversations,
+    required this.checkedAt,
+  });
+
+  final String folderName;
+  final int totalThreads;
+  final List<CodexConversationRecord> changedConversations;
+  final DateTime checkedAt;
+}
+
+class CodexHistorySyncState {
+  const CodexHistorySyncState({
+    required this.running,
+    required this.folderName,
+    required this.threadCount,
+    this.lastReadAt,
+    this.lastError,
+  });
+
+  const CodexHistorySyncState.idle()
+    : running = false,
+      folderName = 'OSS',
+      threadCount = 0,
+      lastReadAt = null,
+      lastError = null;
+
+  final bool running;
+  final String folderName;
+  final int threadCount;
+  final DateTime? lastReadAt;
+  final String? lastError;
+}
+
 abstract class ChatGptAuthService {
   const ChatGptAuthService();
 
@@ -79,6 +178,12 @@ abstract class ChatGptAuthService {
   Future<void> cancelLogin(String loginId);
 
   Future<void> logout();
+
+  Future<ChatGptCodexQuotaState> readQuota();
+
+  Future<CodexHistoryBatch> readCodexHistory({bool fullRefresh = false});
+
+  Future<void> dispose();
 }
 
 class NoopChatGptAuthService extends ChatGptAuthService {
@@ -109,4 +214,16 @@ class NoopChatGptAuthService extends ChatGptAuthService {
 
   @override
   Future<void> logout() async {}
+
+  @override
+  Future<ChatGptCodexQuotaState> readQuota() async =>
+      const ChatGptCodexQuotaState.unavailable('当前平台不支持 Codex 额度读取。');
+
+  @override
+  Future<CodexHistoryBatch> readCodexHistory({bool fullRefresh = false}) {
+    return Future<CodexHistoryBatch>.error(StateError('当前平台不支持 Codex 会话读取。'));
+  }
+
+  @override
+  Future<void> dispose() async {}
 }
