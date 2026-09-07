@@ -39,9 +39,18 @@ class _WordBankPageState extends State<WordBankPage> {
           '${controller.words.length} 个词 · ${controller.dueWords.length} 个待复习',
       actions: [
         AppPrimaryButton(
-          label: '导入',
+          label: '手动导入',
           icon: CupertinoIcons.add,
-          onPressed: controller.busy ? null : () => _showImportDialog(context),
+          onPressed: controller.busy
+              ? null
+              : () => _showImportDialog(context, aiAnalysis: false),
+        ),
+        AppPrimaryButton(
+          label: 'AI 导入',
+          icon: CupertinoIcons.sparkles,
+          onPressed: controller.busy
+              ? null
+              : () => _showImportDialog(context, aiAnalysis: true),
         ),
       ],
       inlineMobileActions: true,
@@ -93,7 +102,10 @@ class _WordBankPageState extends State<WordBankPage> {
     );
   }
 
-  Future<void> _showImportDialog(BuildContext pageContext) async {
+  Future<void> _showImportDialog(
+    BuildContext pageContext, {
+    required bool aiAnalysis,
+  }) async {
     final input = TextEditingController();
     await showCupertinoModalPopup<void>(
       context: pageContext,
@@ -128,8 +140,11 @@ class _WordBankPageState extends State<WordBankPage> {
                     children: [
                       Row(
                         children: [
-                          const Expanded(
-                            child: Text('导入英文词表', style: AppTextStyles.title),
+                          Expanded(
+                            child: Text(
+                              aiAnalysis ? 'AI 导入与分析' : '手动导入单词',
+                              style: AppTextStyles.title,
+                            ),
                           ),
                           AppIconButton(
                             icon: CupertinoIcons.xmark,
@@ -139,7 +154,9 @@ class _WordBankPageState extends State<WordBankPage> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        '直接粘贴英文单词、段落或每行一个词。系统会自动提取并去重。',
+                        aiAnalysis
+                            ? '粘贴学习材料或 AI 对话。当前选中的 AI 会提取单词、分析总结，并生成一篇 Learning Journal。'
+                            : '直接粘贴英文单词、段落或每行一个词。系统会提取并去重。',
                         style: AppTextStyles.body.copyWith(
                           color: AppPalette.resolve(
                             dialogContext,
@@ -153,7 +170,9 @@ class _WordBankPageState extends State<WordBankPage> {
                         controller: input,
                         minLines: 7,
                         maxLines: 10,
-                        placeholder: 'abandon\nability\nacademic...',
+                        placeholder: aiAnalysis
+                            ? '粘贴课文、学习资料或 AI 对话…'
+                            : 'abandon\nability\nacademic...',
                         padding: const EdgeInsets.all(14),
                         textInputAction: TextInputAction.newline,
                         decoration: BoxDecoration(
@@ -169,8 +188,10 @@ class _WordBankPageState extends State<WordBankPage> {
                       const SizedBox(height: 16),
                       AppPrimaryButton(
                         key: const ValueKey('word-import-submit'),
-                        label: '整理并导入',
-                        icon: CupertinoIcons.wand_stars,
+                        label: aiAnalysis ? 'AI 分析并导入' : '导入单词',
+                        icon: aiAnalysis
+                            ? CupertinoIcons.wand_stars
+                            : CupertinoIcons.add_circled_solid,
                         fullWidth: true,
                         onPressed: () {
                           if (input.text.length >
@@ -191,7 +212,9 @@ class _WordBankPageState extends State<WordBankPage> {
                               showAppMessage(
                                 pageContext,
                                 title: '还没有内容',
-                                message: '请先粘贴英文单词或一段英文文本。',
+                                message: aiAnalysis
+                                    ? '请先粘贴学习材料或 AI 对话。'
+                                    : '请先粘贴英文单词或一段英文文本。',
                                 tone: AppMessageTone.info,
                               ),
                             );
@@ -202,14 +225,24 @@ class _WordBankPageState extends State<WordBankPage> {
                             dialogContext,
                             rootNavigator: true,
                           ).pop();
-                          _showQueuedConfirmation(pageContext);
-                          unawaited(
-                            _importInBackground(
-                              pageContext: pageContext,
-                              controller: controller,
-                              rawText: rawText,
-                            ),
-                          );
+                          if (aiAnalysis) {
+                            unawaited(
+                              _aiImportInBackground(
+                                pageContext: pageContext,
+                                controller: controller,
+                                rawText: rawText,
+                              ),
+                            );
+                          } else {
+                            _showQueuedConfirmation(pageContext);
+                            unawaited(
+                              _importInBackground(
+                                pageContext: pageContext,
+                                controller: controller,
+                                rawText: rawText,
+                              ),
+                            );
+                          }
                         },
                       ),
                     ],
@@ -222,6 +255,34 @@ class _WordBankPageState extends State<WordBankPage> {
       ),
     );
     input.dispose();
+  }
+
+  Future<void> _aiImportInBackground({
+    required BuildContext pageContext,
+    required AppController controller,
+    required String rawText,
+  }) async {
+    try {
+      final result = await controller.importConversation(rawText);
+      if (!pageContext.mounted) return;
+      await showAppMessage(
+        pageContext,
+        title: 'AI 导入完成',
+        message:
+            '已生成「${result.title}」Learning Journal，并新增 ${result.insertedWords} 个单词${result.warning == null ? '。' : '。${result.warning}'}',
+        tone: result.warning == null
+            ? AppMessageTone.success
+            : AppMessageTone.warning,
+      );
+    } catch (error) {
+      if (!pageContext.mounted) return;
+      await showAppMessage(
+        pageContext,
+        title: 'AI 导入失败',
+        message: '$error',
+        tone: AppMessageTone.warning,
+      );
+    }
   }
 
   Future<void> _importInBackground({

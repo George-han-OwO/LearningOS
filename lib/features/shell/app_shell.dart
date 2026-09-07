@@ -2,18 +2,14 @@ import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 
-import '../../core/app_scope.dart';
 import '../../design/app_theme.dart';
 import '../../design/app_widgets.dart';
-import '../capture/capture_page.dart';
-import '../course/course_page.dart';
-import '../notes/notes_page.dart';
-import '../profile/profile_page.dart';
-import '../safety/safety_page.dart';
+import '../notes/learning_journal_page.dart';
+import '../settings/settings_page.dart';
 import '../today/today_page.dart';
 import '../words/word_bank_page.dart';
 
-enum AppDestination { today, course, capture, words, notes, safety, profile }
+enum AppDestination { home, words, journal, settings }
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -23,7 +19,7 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
-  AppDestination _selected = AppDestination.today;
+  AppDestination _selected = AppDestination.home;
 
   void _select(AppDestination destination) {
     setState(() => _selected = destination);
@@ -31,15 +27,10 @@ class _AppShellState extends State<AppShell> {
 
   Widget _page(AppDestination destination) {
     return switch (destination) {
-      AppDestination.today => TodayPage(onNavigate: _select),
-      AppDestination.course => const CoursePage(),
-      AppDestination.capture => const CapturePage(),
+      AppDestination.home => TodayPage(onNavigate: _select),
       AppDestination.words => const WordBankPage(),
-      AppDestination.notes => const NotesPage(),
-      AppDestination.safety => const SafetyPage(),
-      AppDestination.profile => ProfilePage(
-        onOpenSafety: () => _select(AppDestination.safety),
-      ),
+      AppDestination.journal => const LearningJournalPage(),
+      AppDestination.settings => const SettingsPage(),
     };
   }
 
@@ -57,11 +48,7 @@ class _AppShellState extends State<AppShell> {
     return CupertinoPageScaffold(
       child: Row(
         children: [
-          _DesktopSidebar(
-            selected: _selected,
-            onSelected: _select,
-            userName: AppScope.of(context).currentUser?.displayName ?? '我的',
-          ),
+          _DesktopSidebar(selected: _selected, onSelected: _select),
           Expanded(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 220),
@@ -80,33 +67,26 @@ class _AppShellState extends State<AppShell> {
 
   Widget _buildMobile(BuildContext context) {
     final destinations = [
-      AppDestination.today,
+      AppDestination.home,
       AppDestination.words,
-      AppDestination.notes,
+      AppDestination.journal,
     ];
     final mobileSelected = destinations.contains(_selected)
         ? _selected
-        : AppDestination.today;
+        : AppDestination.home;
     final index = destinations.indexOf(mobileSelected);
     final mainPages = <Widget>[
       TodayPage(onNavigate: _select),
       const WordBankPage(),
-      const NotesPage(),
+      const LearningJournalPage(),
     ];
 
     return CupertinoPageScaffold(
       child: Column(
         children: [
           Expanded(
-            child: _selected == AppDestination.profile
-                ? ProfilePage(
-                    onOpenSafety: () => _select(AppDestination.safety),
-                  )
-                : _selected == AppDestination.safety
-                ? SafetyPage(
-                    showBackButton: true,
-                    onBack: () => _select(AppDestination.profile),
-                  )
+            child: _selected == AppDestination.settings
+                ? const SettingsPage()
                 : IndexedStack(index: index, children: mainPages),
           ),
           ColoredBox(
@@ -132,17 +112,17 @@ class _AppShellState extends State<AppShell> {
                     BottomNavigationBarItem(
                       icon: Icon(CupertinoIcons.calendar),
                       activeIcon: Icon(CupertinoIcons.calendar_today),
-                      label: '今日',
+                      label: '主页',
                     ),
                     BottomNavigationBarItem(
                       icon: Icon(CupertinoIcons.book),
                       activeIcon: Icon(CupertinoIcons.book_fill),
-                      label: 'Word Bank',
+                      label: '单词',
                     ),
                     BottomNavigationBarItem(
                       icon: Icon(CupertinoIcons.doc_text),
                       activeIcon: Icon(CupertinoIcons.doc_text_fill),
-                      label: 'Library',
+                      label: '学习笔记',
                     ),
                   ],
                 ),
@@ -156,34 +136,29 @@ class _AppShellState extends State<AppShell> {
 }
 
 class _DesktopSidebar extends StatelessWidget {
-  const _DesktopSidebar({
-    required this.selected,
-    required this.onSelected,
-    required this.userName,
-  });
+  const _DesktopSidebar({required this.selected, required this.onSelected});
 
   final AppDestination selected;
   final ValueChanged<AppDestination> onSelected;
-  final String userName;
 
   static const destinations = [
     (
-      destination: AppDestination.today,
+      destination: AppDestination.home,
       icon: CupertinoIcons.calendar,
       selectedIcon: CupertinoIcons.calendar_today,
-      label: '今日',
+      label: '主页',
     ),
     (
       destination: AppDestination.words,
       icon: CupertinoIcons.book,
       selectedIcon: CupertinoIcons.book_fill,
-      label: 'Word Bank',
+      label: '单词',
     ),
     (
-      destination: AppDestination.notes,
+      destination: AppDestination.journal,
       icon: CupertinoIcons.doc_text,
       selectedIcon: CupertinoIcons.doc_text_fill,
-      label: '双语笔记',
+      label: '学习笔记',
     ),
   ];
 
@@ -252,20 +227,18 @@ class _DesktopSidebar extends StatelessWidget {
                       icon: selected == item.destination
                           ? item.selectedIcon
                           : item.icon,
-                      label: item.destination == AppDestination.notes
-                          ? '$userName Library'
-                          : item.label,
+                      label: item.label,
                       selected: selected == item.destination,
                       onPressed: () => onSelected(item.destination),
                     ),
                   const Spacer(),
                   _SidebarItem(
-                    icon: selected == AppDestination.profile
-                        ? CupertinoIcons.person_fill
-                        : CupertinoIcons.person,
-                    label: '我的与设置',
-                    selected: selected == AppDestination.profile,
-                    onPressed: () => onSelected(AppDestination.profile),
+                    icon: selected == AppDestination.settings
+                        ? CupertinoIcons.settings_solid
+                        : CupertinoIcons.settings,
+                    label: 'Settings',
+                    selected: selected == AppDestination.settings,
+                    onPressed: () => onSelected(AppDestination.settings),
                   ),
                 ],
               ),

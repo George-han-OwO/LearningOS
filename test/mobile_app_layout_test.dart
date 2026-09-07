@@ -38,9 +38,15 @@ void main() {
       );
     }
 
-    await tester.tap(find.text('Word Bank'));
+    expect(find.text('今日待办'), findsOneWidget);
+    expect(find.text('已完成'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+
+    await tester.tap(find.text('单词'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    expect(find.text('手动导入'), findsOneWidget);
+    expect(find.text('AI 导入'), findsOneWidget);
     if (_writePreviews) {
       await expectLater(
         find.byType(AppShell),
@@ -48,9 +54,23 @@ void main() {
       );
     }
 
-    await tester.tap(find.text('Library'));
+    await tester.tap(find.text('学习笔记'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    expect(find.text('AI 分析'), findsOneWidget);
+    expect(find.text('新建'), findsOneWidget);
+    await tester.tap(find.text('新建'));
+    await tester.pumpAndSettle();
+    final journalField = tester.widget<CupertinoTextField>(
+      find.descendant(
+        of: find.byKey(const ValueKey('journal-editor')),
+        matching: find.byType(CupertinoTextField),
+      ),
+    );
+    expect(journalField.controller!.text, startsWith('# Learning Journal'));
+    expect(journalField.controller!.text, contains('## 8. 自由记录'));
+    await tester.tap(find.byIcon(CupertinoIcons.xmark).last);
+    await tester.pumpAndSettle();
     if (_writePreviews) {
       await expectLater(
         find.byType(AppShell),
@@ -58,11 +78,14 @@ void main() {
       );
     }
 
-    await tester.tap(find.text('今日'));
+    await tester.tap(find.text('主页'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(CupertinoIcons.person));
+    await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    expect(find.text('DeepSeek'), findsWidgets);
+    expect(find.text('ChatGPT-Codex'), findsWidgets);
+    expect(find.textContaining('Canvas'), findsNothing);
     if (_writePreviews) {
       await expectLater(
         find.byType(AppShell),

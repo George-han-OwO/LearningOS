@@ -29,9 +29,9 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('导入'));
+    await tester.tap(find.text('手动导入'));
     await tester.pumpAndSettle();
-    expect(find.text('导入英文词表'), findsOneWidget);
+    expect(find.text('手动导入单词'), findsOneWidget);
 
     await tester.enterText(
       find.byKey(const ValueKey('word-import-input')),
@@ -44,7 +44,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.importStarted, isTrue);
-    expect(find.text('导入英文词表'), findsNothing);
+    expect(find.text('手动导入单词'), findsNothing);
     expect(controller.importCompleted, isFalse);
 
     controller.completeImport();

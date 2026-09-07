@@ -7,6 +7,7 @@ import 'codex/chatgpt_auth_service.dart';
 import '../data/app_database.dart';
 import '../domain/auto_note_schedule.dart';
 import '../domain/learning_engine.dart';
+import '../domain/learning_journal.dart';
 import '../domain/models.dart';
 import '../domain/security_policy.dart';
 import '../domain/word_parser.dart';
@@ -26,6 +27,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   final PasswordHasher _passwordHasher;
   final AiService _aiService;
   final ChatGptAuthService _chatGptAuthService;
+
+  // The simplified client only performs AI work after an explicit import.
+  // Legacy server APIs and stored settings remain readable for migration, but
+  // they no longer start background conversation or email ingestion.
+  bool get _legacyAutomationEnabled => false;
 
   AppUser? _currentUser;
   List<StudyWord> _words = const [];
@@ -504,27 +510,31 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       final inserted = analysis.words.isEmpty
           ? 0
           : await _database.insertWords(userId: user.id, words: analysis.words);
-      final concepts = analysis.learnedConcepts.isEmpty
-          ? ''
-          : '\n\n学习证据 / Learned concepts:\n${analysis.learnedConcepts.map((item) => '- $item').join('\n')}';
-      final actions = analysis.actionItems.isEmpty
-          ? ''
-          : '\n\n待复习 / Next actions:\n${analysis.actionItems.map((item) => '- $item').join('\n')}';
       final archivedAt = DateTime.now();
-      final source = 'AI 对话导入 · ${archivedAt.toIso8601String()}';
+      final source = 'AI 分析 · $activeAiProviderLabel';
+      final journal = LearningJournalTemplate.fromAiAnalysis(
+        topic: analysis.title,
+        source: source,
+        summaryChinese: analysis.summaryChinese,
+        summaryEnglish: analysis.summaryEnglish,
+        concepts: analysis.learnedConcepts,
+        actions: analysis.actionItems,
+        words: analysis.words,
+        originalText: transcript.trim(),
+        date: archivedAt,
+      );
       await _database.addNote(
         userId: user.id,
         title: analysis.title,
-        contentEnglish:
-            '${analysis.summaryEnglish}\n\n[Original AI conversation]\n${transcript.trim()}',
-        contentChinese: '${analysis.summaryChinese}$concepts$actions',
+        contentEnglish: '',
+        contentChinese: journal,
         source: source,
       );
       await _database.saveObsidianEntry(
         userId: user.id,
         title: analysis.title,
-        contentEnglish: analysis.summaryEnglish,
-        contentChinese: '${analysis.summaryChinese}$concepts$actions',
+        contentEnglish: '',
+        contentChinese: journal,
         source: source,
         category: analysis.category,
         tags: analysis.tags,
@@ -1125,6 +1135,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   void _startCodexRealtimeBridge({bool fullRefresh = false}) {
     _codexRealtimeTimer?.cancel();
     _codexRealtimeTimer = null;
+    if (!_legacyAutomationEnabled) return;
     if (_currentUser == null ||
         !_chatGptAuth.authenticated ||
         !_chatGptAuthService.supported) {
@@ -1154,8 +1165,14 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       return '暂时无法刷新 Codex 账号或模型列表，请稍后重试。';
     }
-    await _refreshCodexRealtimeBridge(fullRefresh: true, refreshQuota: true);
-    return _codexHistory.lastError ?? _codexQuota.message;
+    try {
+      _codexQuota = await _chatGptAuthService.readQuota();
+      _lastCodexQuotaRefreshAt = DateTime.now();
+      notifyListeners();
+      return _codexQuota.message;
+    } catch (_) {
+      return '账号和模型已刷新，但暂时无法读取 Codex 额度。';
+    }
   }
 
   Future<void> _refreshCodexRealtimeBridge({
@@ -1236,6 +1253,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   void _startConversationSyncTimer({bool runMissedNightly = true}) {
     _conversationSyncTimer?.cancel();
     _conversationSyncTimer = null;
+    if (!_legacyAutomationEnabled) return;
     if (_currentUser == null || !_conversationSyncBackendAvailable) return;
 
     if (_conversationSyncState.enabled) {
