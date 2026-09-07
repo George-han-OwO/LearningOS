@@ -1,9 +1,10 @@
 # AILearningOS · ChatGPT 自动笔记
 
-一个面向 Android 与 Windows 的本地优先、双语 AI 辅助学习系统。产品核心是个人信息自动摘要：Windows 端通过官方 Codex App Server 接入 ChatGPT 订阅额度，并以前台 2 秒增量检查实时读取本机 `OSS` 工作区的 Codex 会话；摘要默认每天 23:00 统一生成，用户打开“自动安排生成笔记”后改为每 15 分钟生成。飞书录音转写按 webhook 事件即时处理；Codex 会话仍只总结按更新时间排序后的倒数第二条、且已经生成完成的对话。主界面只保留今日 Note、Word Bank 和“用户名 Library”三个核心入口。界面使用 Flutter 的 Cupertino 组件和自定义 Apple 风格设计系统，不依赖 Material UI。
+一个面向 Android 与 Windows 的双语 AI 辅助学习系统。手机通过实际部署的 AILearningOS 后端完成 ChatGPT 设备码登录；后端为每个账号启动隔离的官方 Codex App Server，并从 `model/list` 自动选择该账号当前可用的模型。后端每 2 秒增量读取 `OSS` 工作区对话并幂等归档到账号隔离的 Obsidian Vault，手机退到后台也不依赖客户端定时器。笔记、词库、对话、邮件、飞书摘要和课程计划在 Codex 模式下均通过后端消耗该账号的 Codex 额度，失败时不会静默回退到 DeepSeek。Claw 是另一个独立的服务器更新机器人；AILearningOS 后端和 Codex 接入均不依赖 Claw。
 
 ## 当前可用功能
 
+- Canvas LMS 个人账号接入（需部署 v3.9 后端和 v1.3.7 客户端）：验证账号、读取在读课程、作业、截止时间和提交状态；令牌按用户在后端加密保存，详见 [Canvas 接入](server/Canvas接入.md)。
 - 服务端账号注册、密码登录与会话恢复（客户端通过 HTTPS API 调用）
 - PBKDF2-HMAC-SHA256 加盐密码哈希，不保存明文密码
 - 服务端 SQLite 数据库；账号、词库、复习、打卡、笔记与采集记录彼此关联
@@ -14,13 +15,13 @@
 - Word Bank 英文提取、大小写归一、去重、搜索和表格/卡片视图
 - 内置基础词典的中文释义、音标与双语例句；未知词保留“待 AI 翻译”状态
 - DeepSeek 联网补全：可在本机填写 API Key 后，用 `DeepSeek-V4-flash` 为词库补齐音标、词性、释义与双语例句
-- ChatGPT Codex 订阅额度：通过官方 `account/rateLimits/read` 读取短周期/长周期已用比例、剩余比例和重置时间；设置页每分钟刷新，也可手动刷新
-- Codex OSS 会话实时读取：通过官方 `thread/list` 与 `thread/turns/list` 在应用前台每 2 秒增量检查；只同步用户消息和助手正文，不采集推理、命令、工具输出或文件变更
+- ChatGPT Codex 订阅额度：通过官方 `account/rateLimits/read` 读取短周期/长周期已用比例、剩余比例和重置时间；设置页每分钟刷新，也可手动刷新。手机使用服务器隔离目录，Windows 使用本机目录
+- Codex OSS 会话实时读取：AILearningOS 后端通过官方 `thread/list` 与 `thread/turns/list` 每 2 秒增量检查；只同步用户消息和助手正文，不采集推理、命令、工具输出或文件变更
 - 输入关键信息，自动整理中英双语笔记。拥有新建笔记和 Markdown 导出
 - 自动安排生成笔记：默认每天 23:00 统一检查；打开高频开关后才每 15 分钟检查同步收件箱。Codex 只处理最新一条的上一条已完成对话；自动生成中英双语摘要、学习概念和待复习行动，并将可复习英文词自动加入 Word Bank
 - 对话同步状态：记录上次检查、上次已处理会话、跳过未完成会话和错误原因，避免重复生成笔记
 - Outlook / QQ 邮箱自动摘要：按邮件 ID 增量处理完整邮件，生成摘要、分类和标签
-- 飞书录音豆接入：服务器提供录音完成事件/转写文本入口，调用 DeepSeek 生成摘要、学习要点和词汇，并写入今日 Note、Word Bank 与 Obsidian，见 [`server/飞书录音豆接入.md`](server/飞书录音豆接入.md)
+- 飞书录音豆接入：服务器提供录音完成事件/转写文本入口，调用当前全局选择的 DeepSeek V4 或 ChatGPT-Codex 生成摘要、学习要点和词汇，并写入今日 Note、Word Bank 与 Obsidian，见 [`server/飞书录音豆接入.md`](server/飞书录音豆接入.md)
 - 服务器 Obsidian 归档：每条自动摘要按知识分类写入 `server/data/obsidian-vault/{userId}/{category}`，并维护 `00 Index.md`
 - Obsidian 知识管理：导出带 YAML frontmatter、证据类型、AI 标记、标签和 `[[wikilink]]` 的 Vault，保留原始对话与摘要的关系
 - OpenClaw / Claw 部署包：将服务器 Vault 挂载给 Claw 的 Gateway 与 CLI，并接入 `memory-wiki` 检索和编译，见 [`server/openclaw-obsidian/README.md`](server/openclaw-obsidian/README.md)
@@ -34,15 +35,19 @@
 - 玻璃仅用于导航、主要控件和瞬态弹窗；正文内容仍使用稳定的深色表面，避免影响阅读层级
 - 危险操作采用半透明红色液态玻璃提示框，图标、标题、正文和操作文字均使用白色
 
+## AI 双路由
+
+设置页的“AI 模型源”是账号级全局开关。当前已经接入 AI 的功能——词库补全、手动对话分析、Codex 对话自动笔记、Outlook/QQ 邮件摘要、飞书录音摘要、每日课程计划和 AI Chat——全部只使用当前手动选择的一条路径：`DeepSeek V4` 或 `ChatGPT-Codex`。任一路径登录失效、Key 无效、模型不可用或额度耗尽时都会明确报错，不会偷偷切换到另一条路径。图片 OCR 尚未实现，因此不列入双路由能力。
+
 ## 尚未接入
 
 - 图片 OCR、错题自动切分与书页摘要
 - ChatGPT 网页版普通聊天的浏览器采集端（Codex 的 `OSS` 项目会话已经接入；这不等同于读取 chatgpt.com 的全部网页聊天）
 - Outlook OAuth / Microsoft Graph Bridge 和 QQ IMAP / 授权码 Bridge 的具体采集端（服务端邮箱收件箱接口已经提供）
-- Android 进程被系统挂起时的真正后台 15 分钟/23:00 定时任务（当前由客户端进程调度；需要接入系统 WorkManager/后台任务能力才能保证进程被系统挂起时仍执行）
+- Android 进程被系统挂起时的 15 分钟/23:00 **AI 摘要调度**仍由客户端调度；但 OSS 原始对话的 Obsidian 增量归档已由 AILearningOS 后端常驻执行
 - 跨设备同步
 
-图片 OCR 仍未接入。Windows 端的 ChatGPT 登录、Codex 额度与本机 Codex 会话历史均通过官方 Codex App Server 完成；App 只拿账号元数据、额度窗口和经过过滤的用户/助手消息，绝不读取或保存 ChatGPT 密码/token。Android 端需要部署受信任的 Codex 网关后才能使用订阅额度，不能在 APK 内伪造或抓取 ChatGPT 登录态。自动分类结果写入服务器 Obsidian，详见 [产品定义-ChatGPT自动笔记.md](产品定义-ChatGPT自动笔记.md)。Claw 与 Obsidian 的服务器部署步骤详见 [server/openclaw-obsidian/README.md](server/openclaw-obsidian/README.md)。
+图片 OCR 仍未接入。Windows 端的 ChatGPT 登录、Codex 额度与本机 Codex 会话历史均通过官方 Codex App Server 完成；Android 通过 AILearningOS 后端内的隔离 App Server 使用同一官方设备码流程。App 只拿账号元数据、额度窗口和经过过滤的用户/助手消息，绝不读取或保存 ChatGPT 密码/token。自动分类结果写入服务器 Obsidian，详见 [产品定义-ChatGPT自动笔记.md](产品定义-ChatGPT自动笔记.md)。独立的 Claw 更新/知识库工具说明见 [server/openclaw-obsidian/README.md](server/openclaw-obsidian/README.md)，它不参与 Codex 登录和 AI 请求。
 
 ## 运行与验证
 
@@ -79,15 +84,29 @@ dart run bin/server.dart
 
 Android Release APK：
 
-`release/AILearningOS-android-v1.3.2.apk`
+`release/AILearningOS-android-v1.3.7.apk`
 
 SHA-256：
 
-`6D1AA9C60C3FD7D5AC4326EF10D462F29CDE2E1377D982879A041162EA4C39D0`
+`95B90A697E5E6E1B205FE111CA6E3A5BE6B01B6A94B9A551DEE057E7ACD28B07`
 
 大小：
 
-`49,201,232` bytes（约 `46.9` MiB）
+`50,070,348` bytes（约 `47.8` MiB）
+
+Windows 后端部署包（可由管理员手工升级，也可由独立的 Claw 更新机器人执行文件更新）：
+
+`release/AILearningOS-server-windows-x64-v3.9.zip`
+
+SHA-256：
+
+`BF043E62E7973010133200D9285EB8FBCB9447D36032229431AC1785211BBB39`
+
+大小：
+
+`5,800,796` bytes（约 `5.5` MiB）
+
+后端源码包为 `release/AILearningOS-server-source-v3.9.zip`，SHA-256 `AC7B3C862EB16C85C88E8D9885F561FFACCBF41C1A6B320A1E4B6AFCC2EF06C5`，大小 118,627 bytes。v3.9 修复 ChatGPT 授权后一直 pending，并保留当前 LearningOS 账号、数据、DeepSeek Key 与手动选择的 AI 来源；部署和线上验收见 [v3.9 登录修复指南](server/Codex登录修复-v3.9.md)。v1.3.7 APK 已包含 Canvas 设置页；Canvas 账号实测仍需要学校域名。
 
 ## Windows 构建环境
 

@@ -501,7 +501,7 @@ class _TranslationNotice extends StatelessWidget {
           Expanded(
             child: Text(
               state.waitingForApiKey
-                  ? '$count 个词正在等待 AI。服务器会在有待补全字段时每 30 秒检查；API Key 配置并连通后会自动补齐，无需重新导入。'
+                  ? '$count 个词正在等待 AI。服务器会在有待补全字段时每 30 秒检查；当前所选 AI 来源连接后会自动补齐，无需重新导入。'
                   : state.retrying
                   ? '$count 个词仍在后台队列。本轮连接未成功，服务器会在 30 秒后自动重试。'
                   : state.working

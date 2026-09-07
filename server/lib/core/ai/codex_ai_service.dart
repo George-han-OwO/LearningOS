@@ -9,18 +9,14 @@ class CodexAiService implements AiService {
   const CodexAiService({
     this.executable = 'codex',
     this.arguments = const ['app-server'],
+    this.environment,
   });
 
-  static const preferredLabel = 'chatgpt5.5';
-  static const _preferredModelAliases = [
-    'chatgpt5.5',
-    'chatgpt-5.5',
-    'gpt-5.5',
-    'gpt-5.5-codex',
-  ];
+  static const preferredLabel = AiConnectionSettings.defaultCodexModel;
 
   final String executable;
   final List<String> arguments;
+  final Map<String, String>? environment;
 
   @override
   Future<AiConnectionProbe> testConnection(
@@ -29,6 +25,20 @@ class CodexAiService implements AiService {
     CodexAppServerClient? client;
     try {
       client = await _startClient();
+      return await testConnectionWithClient(client, settings);
+    } finally {
+      await client?.dispose();
+    }
+  }
+
+  /// Runs a real Codex response probe on an already authenticated App Server.
+  /// The caller owns the client lifetime, which lets the mobile gateway keep
+  /// one process per account instead of starting a second process for a test.
+  Future<AiConnectionProbe> testConnectionWithClient(
+    CodexAppServerClient client,
+    AiConnectionSettings settings,
+  ) async {
+    try {
       final account = await client.readAccount(refreshToken: true);
       if (!account.authenticated) {
         return const AiConnectionProbe(
@@ -36,7 +46,7 @@ class CodexAiService implements AiService {
           message: '请先使用 ChatGPT 登录，才能走 Codex 额度。',
         );
       }
-      final model = await _resolvePreferredModel(client);
+      final model = await _resolveSelectedModel(client, settings.codexModel);
       final thread = await client.startThread(model: model);
       final result = await client.runTurn(
         threadId: thread.id,
@@ -49,12 +59,10 @@ class CodexAiService implements AiService {
       }
       return AiConnectionProbe(
         ok: true,
-        message: 'ChatGPT 登录已接通 Codex 额度，当前模型为 ${model ?? preferredLabel}。',
+        message: 'ChatGPT 登录已接通 Codex 额度，当前模型为 $model。',
       );
     } on Object catch (error) {
       return AiConnectionProbe(ok: false, message: 'Codex 不可用：$error');
-    } finally {
-      await client?.dispose();
     }
   }
 
@@ -74,6 +82,32 @@ class CodexAiService implements AiService {
     CodexAppServerClient? client;
     try {
       client = await _startClient();
+      return await enrichWordsWithClient(
+        client,
+        settings: settings,
+        words: words,
+      );
+    } finally {
+      await client?.dispose();
+    }
+  }
+
+  /// Enriches words through the caller's per-account App Server process.
+  /// This is the server-gateway path; credentials never leave CODEX_HOME.
+  Future<AiEnrichmentReport> enrichWordsWithClient(
+    CodexAppServerClient client, {
+    required AiConnectionSettings settings,
+    required List<ParsedWord> words,
+  }) async {
+    if (words.isEmpty) {
+      return AiEnrichmentReport(
+        words: words,
+        requestedCount: 0,
+        enrichedCount: 0,
+      );
+    }
+
+    try {
       final account = await client.readAccount(refreshToken: true);
       if (!account.authenticated) {
         return AiEnrichmentReport(
@@ -84,7 +118,7 @@ class CodexAiService implements AiService {
         );
       }
 
-      final model = await _resolvePreferredModel(client);
+      final model = await _resolveSelectedModel(client, settings.codexModel);
       final thread = await client.startThread(model: model);
       final result = await client.runTurn(
         threadId: thread.id,
@@ -147,8 +181,6 @@ class CodexAiService implements AiService {
         enrichedCount: 0,
         warning: 'Codex 联网补全失败：$error',
       );
-    } finally {
-      await client?.dispose();
     }
   }
 
@@ -156,25 +188,25 @@ class CodexAiService implements AiService {
     final client = CodexAppServerClient(
       executable: executable,
       arguments: arguments,
+      environment: environment,
     );
     await client.start();
     return client;
   }
 
-  Future<String?> _resolvePreferredModel(CodexAppServerClient client) async {
-    try {
-      final models = await client.listModels();
-      for (final candidate in _preferredModelAliases) {
-        if (models.contains(candidate)) return candidate;
-      }
-      for (final model in models) {
-        final normalized = model.toLowerCase();
-        if (normalized.contains('5.5')) return model;
-      }
-    } catch (_) {
-      // Fall back to the server default when model discovery is unavailable.
+  Future<String> _resolveSelectedModel(
+    CodexAppServerClient client,
+    String selectedModel,
+  ) async {
+    final models = await client.listModels();
+    final resolved = AiConnectionSettings.selectCodexModel(
+      models,
+      requested: selectedModel,
+    );
+    if (resolved == null) {
+      throw StateError('Codex App Server 没有返回任何可用模型；请重新登录并刷新模型列表。');
     }
-    return null;
+    return resolved;
   }
 
   static String _buildPrompt(List<ParsedWord> batch) {

@@ -26,6 +26,47 @@ String? _errorMessage(Object? value) {
   return null;
 }
 
+double? _numberValue(Object? value) {
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value.trim());
+  return null;
+}
+
+DateTime? _dateTimeValue(Object? value) {
+  if (value is num) {
+    final raw = value.toInt();
+    final milliseconds = raw.abs() < 100000000000 ? raw * 1000 : raw;
+    return DateTime.fromMillisecondsSinceEpoch(milliseconds, isUtc: true);
+  }
+  if (value is String) return DateTime.tryParse(value)?.toUtc();
+  return null;
+}
+
+String? _messageText(Object? value) {
+  if (value is String) return _stringValue(value);
+  if (value is List) {
+    final pieces = <String>[];
+    for (final item in value) {
+      if (item is String) {
+        final text = _stringValue(item);
+        if (text != null) pieces.add(text);
+      } else if (item is Map) {
+        final map = Map<String, dynamic>.from(item);
+        final type = _stringValue(map['type']);
+        if (type == null || type == 'text' || type == 'inputText') {
+          final text = _stringValue(map['text']);
+          if (text != null) pieces.add(text);
+        }
+      }
+    }
+    return pieces.isEmpty ? null : pieces.join('\n');
+  }
+  if (value is Map) {
+    return _stringValue(Map<String, dynamic>.from(value)['text']);
+  }
+  return null;
+}
+
 class CodexThread {
   const CodexThread({required this.id});
 
@@ -212,6 +253,109 @@ class CodexAccountUpdated {
   final String? planType;
 }
 
+class CodexRateLimitWindow {
+  const CodexRateLimitWindow({
+    required this.usedPercent,
+    this.windowDurationMinutes,
+    this.resetsAt,
+  });
+
+  factory CodexRateLimitWindow.fromJson(Map<String, dynamic> json) {
+    return CodexRateLimitWindow(
+      usedPercent: _numberValue(json['usedPercent']) ?? 0,
+      windowDurationMinutes:
+          (_numberValue(json['windowDurationMins']) ??
+                  _numberValue(json['windowDurationMinutes']))
+              ?.round(),
+      resetsAt: _dateTimeValue(json['resetsAt'] ?? json['resetAt']),
+    );
+  }
+
+  final double usedPercent;
+  final int? windowDurationMinutes;
+  final DateTime? resetsAt;
+}
+
+class CodexQuota {
+  const CodexQuota({required this.planType, this.primary, this.secondary});
+
+  factory CodexQuota.fromJson(Map<String, dynamic> json) {
+    final value = json['rateLimits'] ?? json['rate_limits'] ?? json;
+    final limits = value is Map
+        ? Map<String, dynamic>.from(value)
+        : const <String, dynamic>{};
+    final primary = limits['primary'];
+    final secondary = limits['secondary'];
+    return CodexQuota(
+      planType:
+          _stringValue(json['planType']) ??
+          _stringValue(limits['planType']) ??
+          'chatgpt',
+      primary: primary is Map
+          ? CodexRateLimitWindow.fromJson(Map<String, dynamic>.from(primary))
+          : null,
+      secondary: secondary is Map
+          ? CodexRateLimitWindow.fromJson(Map<String, dynamic>.from(secondary))
+          : null,
+    );
+  }
+
+  final String planType;
+  final CodexRateLimitWindow? primary;
+  final CodexRateLimitWindow? secondary;
+}
+
+class CodexThreadSummary {
+  const CodexThreadSummary({
+    required this.id,
+    required this.title,
+    required this.cwd,
+    required this.updatedAt,
+  });
+
+  factory CodexThreadSummary.fromJson(Map<String, dynamic> json) {
+    final id = _stringValue(json['id']);
+    if (id == null) {
+      throw const CodexAppServerException('thread/list 返回的 thread 缺少 id。');
+    }
+    return CodexThreadSummary(
+      id: id,
+      title:
+          _firstString(json, const ['name', 'title', 'preview']) ?? 'Codex 对话',
+      cwd: _stringValue(json['cwd']) ?? '',
+      updatedAt:
+          _dateTimeValue(
+            json['updatedAt'] ?? json['updated_at'] ?? json['recencyAt'],
+          ) ??
+          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+    );
+  }
+
+  final String id;
+  final String title;
+  final String cwd;
+  final DateTime updatedAt;
+}
+
+class CodexThreadPage {
+  const CodexThreadPage({required this.threads, this.nextCursor});
+
+  final List<CodexThreadSummary> threads;
+  final String? nextCursor;
+}
+
+class CodexStoredConversation {
+  const CodexStoredConversation({
+    required this.thread,
+    required this.transcript,
+    required this.isComplete,
+  });
+
+  final CodexThreadSummary thread;
+  final String transcript;
+  final bool isComplete;
+}
+
 /// Bidirectional JSONL transport used by [CodexAppServerClient].
 ///
 /// A custom implementation is useful for integration tests or for a host
@@ -367,7 +511,7 @@ class CodexAppServerClient {
       !Platform.isAndroid && !Platform.isIOS && !Platform.isFuchsia;
 
   bool get isStarted => _started && !_disposed;
-  bool get isInitialized => _initialized && !_disposed;
+  bool get isInitialized => _initialized && !_disposed && !_transportEnded;
 
   Stream<CodexLoginCompleted> get loginCompletions => _loginCompletions.stream;
 
@@ -534,18 +678,136 @@ class CodexAppServerClient {
 
   Future<List<String>> listModels() async {
     _ensureInitialized();
-    final result = await _request('model/list');
-    final map = _resultMap(result, 'model/list');
-    final models = map['models'];
-    if (models is! List) return const [];
-    return [
-      for (final model in models)
-        if (model is Map)
-          (_stringValue(model['id']) ??
-                  _stringValue(model['name']) ??
-                  _stringValue(model['slug'])) ??
-              '',
-    ].where((item) => item.isNotEmpty).toList(growable: false);
+    final modelIds = <String>{};
+    String? cursor;
+    do {
+      final result = await _request(
+        'model/list',
+        params: {'limit': 100, 'includeHidden': false, 'cursor': ?cursor},
+      );
+      final map = _resultMap(result, 'model/list');
+      final models = map['data'] ?? map['models'];
+      if (models is List) {
+        for (final model in models) {
+          if (model is! Map) continue;
+          final id =
+              _stringValue(model['id']) ??
+              _stringValue(model['model']) ??
+              _stringValue(model['name']) ??
+              _stringValue(model['slug']);
+          if (id != null) modelIds.add(id);
+        }
+      }
+      final next = _stringValue(map['nextCursor']);
+      if (next == null || next == cursor) break;
+      cursor = next;
+    } while (true);
+    return modelIds.toList(growable: false);
+  }
+
+  Future<CodexQuota> readRateLimits() async {
+    _ensureInitialized();
+    final result = await _request('account/rateLimits/read');
+    return CodexQuota.fromJson(_resultMap(result, 'account/rateLimits/read'));
+  }
+
+  Future<CodexThreadPage> listThreads({String? cursor, int limit = 100}) async {
+    _ensureInitialized();
+    final params = <String, Object?>{
+      'limit': limit.clamp(1, 100),
+      'sortKey': 'updated_at',
+      'sourceKinds': const <String>[],
+      if (cursor?.trim() case final String cursorValue
+          when cursorValue.isNotEmpty)
+        'cursor': cursorValue,
+    };
+    final result = await _request('thread/list', params: params);
+    final map = _resultMap(result, 'thread/list');
+    final data = map['data'];
+    return CodexThreadPage(
+      threads: [
+        if (data is List)
+          for (final value in data)
+            if (value is Map)
+              CodexThreadSummary.fromJson(Map<String, dynamic>.from(value)),
+      ],
+      nextCursor: _stringValue(map['nextCursor']),
+    );
+  }
+
+  /// Returns only user/assistant messages. Reasoning, commands and tool
+  /// payloads are intentionally excluded before data leaves the server.
+  Future<CodexStoredConversation> readStoredConversation(
+    CodexThreadSummary thread,
+  ) async {
+    _ensureInitialized();
+    final turns = <Map<String, dynamic>>[];
+    String? cursor;
+    var newestTurnComplete = false;
+    var sawNewestTurn = false;
+    do {
+      final result = await _request(
+        'thread/turns/list',
+        params: {
+          'threadId': thread.id,
+          'limit': 100,
+          'sortDirection': 'desc',
+          'itemsView': 'full',
+          'cursor': ?cursor,
+        },
+      );
+      final map = _resultMap(result, 'thread/turns/list');
+      final data = map['data'];
+      if (data is! List || data.isEmpty) break;
+      for (final value in data) {
+        if (value is! Map) continue;
+        final turn = Map<String, dynamic>.from(value);
+        if (!sawNewestTurn) {
+          sawNewestTurn = true;
+          final status = _stringValue(turn['status']) ?? '';
+          newestTurnComplete =
+              status == 'completed' ||
+              status == 'failed' ||
+              status == 'interrupted';
+        }
+        turns.add(turn);
+      }
+      final next = _stringValue(map['nextCursor']);
+      if (next == null || next == cursor) break;
+      cursor = next;
+    } while (true);
+
+    turns.sort((left, right) {
+      final leftAt =
+          _dateTimeValue(left['startedAt']) ??
+          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      final rightAt =
+          _dateTimeValue(right['startedAt']) ??
+          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      return leftAt.compareTo(rightAt);
+    });
+    final messages = <String>[];
+    for (final turn in turns) {
+      final items = turn['items'];
+      if (items is! List) continue;
+      for (final value in items) {
+        if (value is! Map) continue;
+        final item = Map<String, dynamic>.from(value);
+        final type = _stringValue(item['type']);
+        if (type == 'userMessage') {
+          final text = _messageText(item['content']);
+          if (text != null) messages.add('User:\n$text');
+        } else if (type == 'agentMessage') {
+          final text = _messageText(item['text'] ?? item['content']);
+          if (text != null) messages.add('Assistant:\n$text');
+        }
+      }
+    }
+    return CodexStoredConversation(
+      thread: thread,
+      transcript: messages.join('\n\n').trim(),
+      isComplete: sawNewestTurn && newestTurnComplete,
+    );
   }
 
   Future<CodexThread> startThread({String? model}) async {

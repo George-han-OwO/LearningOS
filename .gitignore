@@ -7,6 +7,7 @@
 **/.env
 .atom/
 .build/
+.build-temp/
 .buildlog/
 .history
 .svn/
@@ -69,6 +70,8 @@ app.*.map.json
 /deploy_package/bin/
 /deploy_package/lib/
 /deploy_package/config.yml
+/release/AILearningOS-server-source-*/
+/release/AILearningOS-server-windows-*/
 
 # Local tunnel state can contain account- or host-specific identifiers.
 /.cloudflared/

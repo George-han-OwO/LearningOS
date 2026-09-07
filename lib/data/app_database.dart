@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../domain/learning_engine.dart';
 import '../domain/models.dart';
 import '../domain/security_policy.dart';
@@ -7,9 +8,10 @@ import '../domain/word_parser.dart';
 
 /// HTTP-backed data source shared by Android and Windows builds.
 class AppDatabase {
-  AppDatabase._(this.apiUrl) : _client = http.Client();
+  AppDatabase._(this.apiUrl, this._sessionStore) : _client = http.Client();
   final String apiUrl;
   final http.Client _client;
+  final _ServerSessionStore _sessionStore;
   static const _defaultApiUrl = 'https://os.georgehan0514.top';
 
   static Future<AppDatabase> open() async {
@@ -17,12 +19,29 @@ class AppDatabase {
     final url = (configured.trim().isEmpty ? _defaultApiUrl : configured)
         .trim()
         .replaceFirst(RegExp(r'/+$'), '');
-    return AppDatabase._(url);
+    return AppDatabase._(url, _ServerSessionStore());
   }
 
-  Future<dynamic> _request(String method, String path, {Object? body}) async {
+  /// Called only by the real application bootstrap. Keeping this explicit
+  /// avoids initializing a platform credential plug-in in pure widget tests.
+  Future<void> restoreSession() async {
+    _bearerToken = await _sessionStore.read();
+  }
+
+  String? _bearerToken;
+
+  Future<dynamic> _request(
+    String method,
+    String path, {
+    Object? body,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
     final request = http.Request(method, Uri.parse('$apiUrl$path'))
       ..headers['Accept'] = 'application/json';
+    final token = _bearerToken;
+    if (token != null && token.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
     if (body != null) {
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode(body);
@@ -32,9 +51,9 @@ class AppDatabase {
       response = await _client
           .send(request)
           .then(http.Response.fromStream)
-          .timeout(const Duration(seconds: 20));
+          .timeout(timeout);
     } catch (error) {
-      throw StateError('服务器连接失败（$apiUrl）：$error');
+      throw ServerConnectionException('服务器连接失败（$apiUrl）：$error');
     }
     dynamic decoded;
     try {
@@ -46,8 +65,12 @@ class AppDatabase {
       final message = decoded is Map
           ? decoded['error'] ?? decoded['message']
           : null;
+      final action = decoded is Map ? decoded['action']?.toString().trim() : '';
       throw StateError(
-        message?.toString() ?? '服务器返回 HTTP ${response.statusCode}',
+        [
+          message?.toString() ?? '服务器返回 HTTP ${response.statusCode}',
+          if (action != null && action.isNotEmpty) action,
+        ].join(' '),
       );
     }
     return decoded;
@@ -55,6 +78,13 @@ class AppDatabase {
 
   Map<String, dynamic> _map(dynamic value) =>
       value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
+
+  Future<void> _adoptSession(Map<String, dynamic> response) async {
+    final token = response['session_token']?.toString().trim() ?? '';
+    if (token.isEmpty) return;
+    _bearerToken = token;
+    await _sessionStore.write(token);
+  }
 
   Future<AppUser?> currentUser() async {
     try {
@@ -67,6 +97,44 @@ class AppDatabase {
       rethrow;
     }
   }
+
+  Future<Map<String, dynamic>> canvasConnection() async =>
+      _map(await _request('GET', '/api/integrations/canvas/connection'));
+
+  Future<Map<String, dynamic>> connectCanvas(
+    String baseUrl,
+    String token,
+  ) async => _map(
+    await _request(
+      'PUT',
+      '/api/integrations/canvas/connection',
+      body: {'base_url': baseUrl.trim(), 'token': token.trim()},
+    ),
+  );
+
+  Future<void> disconnectCanvas() async {
+    await _request('DELETE', '/api/integrations/canvas/connection');
+  }
+
+  Future<Map<String, dynamic>> canvasCourses({String? cursor}) async => _map(
+    await _request(
+      'GET',
+      '/api/integrations/canvas/courses${_canvasCursor(cursor)}',
+    ),
+  );
+
+  Future<Map<String, dynamic>> canvasAssignments(
+    String courseId, {
+    String? cursor,
+  }) async => _map(
+    await _request(
+      'GET',
+      '/api/integrations/canvas/courses/${Uri.encodeComponent(courseId)}/assignments${_canvasCursor(cursor)}',
+    ),
+  );
+
+  String _canvasCursor(String? cursor) =>
+      cursor == null ? '' : '?cursor=${Uri.encodeQueryComponent(cursor)}';
 
   /// Compatibility method for old callers. Do not use this for new login UI:
   /// password verification belongs on the server.
@@ -104,13 +172,15 @@ class AppDatabase {
     required String email,
     required String password,
   }) async {
-    final user = _map(
+    final response = _map(
       await _request(
         'POST',
         '/api/auth/login',
         body: {'email': email, 'password': password},
       ),
-    )['user'];
+    );
+    await _adoptSession(response);
+    final user = response['user'];
     if (user is! Map) throw StateError('服务器登录响应缺少用户信息。');
     return AppUser.fromMap(_map(user));
   }
@@ -140,8 +210,8 @@ class AppDatabase {
     );
   }
 
-  Future<AiConnectionSettings> aiSettings() async {
-    final data = _map(await _request('GET', '/api/settings/ai'));
+  Future<AiConnectionSettings> aiSettings(int userId) async {
+    final data = _map(await _request('GET', '/api/users/$userId/settings/ai'));
     final model = _normalizeDeepSeekModel(data['model'] as String? ?? '');
     return AiConnectionSettings(
       enabled: data['enabled'] == true,
@@ -149,33 +219,46 @@ class AppDatabase {
       // never returned to Android or Windows.
       apiKey: '',
       model: model,
+      provider: AiProvider.fromApiValue(data['provider']),
+      codexModel: (data['codex_model'] as String? ?? '').trim().isEmpty
+          ? AiConnectionSettings.defaultCodexModel
+          : (data['codex_model'] as String).trim(),
       apiKeyConfigured: data['api_key_configured'] == true,
       apiKeyHint: data['api_key_hint']?.toString(),
       serverEncryptionReady: data['encryption_ready'] == true,
     );
   }
 
-  Future<void> saveAiSettings(AiConnectionSettings settings) async {
+  Future<void> saveAiSettings(int userId, AiConnectionSettings settings) async {
     await _request(
       'POST',
-      '/api/settings/ai',
+      '/api/users/$userId/settings/ai',
       body: {
         'enabled': settings.enabled,
         'api_key': settings.apiKey,
         'model': settings.model,
+        'provider': settings.provider.apiValue,
+        'codex_model': settings.codexModel,
       },
     );
   }
 
-  Future<String?> testAiConnection(AiConnectionSettings settings) async {
+  Future<String?> testAiConnection(
+    int userId,
+    AiConnectionSettings settings, {
+    required AiApiKeyTestSource keySource,
+  }) async {
     final data = _map(
       await _request(
         'POST',
-        '/api/settings/ai/test',
+        '/api/users/$userId/settings/ai/test',
         body: {
           'enabled': settings.enabled,
           'api_key': settings.apiKey,
           'model': settings.model,
+          'provider': settings.provider.apiValue,
+          'codex_model': settings.codexModel,
+          'key_source': keySource.apiValue,
         },
       ),
     );
@@ -184,13 +267,24 @@ class AppDatabase {
         : data['message']?.toString() ?? 'DeepSeek 连接测试失败。';
   }
 
+  Future<Map<String, dynamic>> analyzeConversation(
+    int userId,
+    String transcript,
+  ) async => _map(
+    await _request(
+      'POST',
+      '/api/users/$userId/ai/analyze-conversation',
+      body: {'transcript': transcript},
+    ),
+  );
+
   Future<AppUser> createUser({
     required String email,
     required String displayName,
     required String passwordHash,
     required String passwordSalt,
   }) async {
-    final user = _map(
+    final response = _map(
       await _request(
         'POST',
         '/api/users',
@@ -201,7 +295,9 @@ class AppDatabase {
           'password_salt': passwordSalt,
         },
       ),
-    )['user'];
+    );
+    await _adoptSession(response);
+    final user = response['user'];
     return AppUser.fromMap(_map(user));
   }
 
@@ -224,7 +320,7 @@ class AppDatabase {
     required String email,
     required String displayName,
   }) async {
-    final user = _map(
+    final response = _map(
       await _request(
         'POST',
         '/api/users/external',
@@ -235,16 +331,88 @@ class AppDatabase {
           'display_name': displayName,
         },
       ),
-    )['user'];
+    );
+    await _adoptSession(response);
+    final user = response['user'];
     return AppUser.fromMap(_map(user));
   }
 
   Future<void> setCurrentUser(int userId) async {
-    await _request('POST', '/api/session/current', body: {'user_id': userId});
+    final current = await currentUser();
+    if (current?.id == userId) return;
+    throw StateError('服务器会话与要使用的账号不一致，请重新登录。');
   }
 
   Future<void> clearSession() async {
-    await _request('POST', '/api/session/clear');
+    try {
+      await _request('POST', '/api/session/clear');
+    } finally {
+      _bearerToken = null;
+      await _sessionStore.clear();
+    }
+  }
+
+  Future<Map<String, dynamic>> startChatGptDeviceLogin() async => _map(
+    await _request(
+      'POST',
+      '/api/auth/chatgpt/device/start',
+      timeout: const Duration(seconds: 90),
+    ),
+  );
+
+  Future<Map<String, dynamic>> completeChatGptDeviceLogin({
+    required String attemptId,
+    required String attemptSecret,
+  }) async {
+    final response = _map(
+      await _request(
+        'POST',
+        '/api/auth/chatgpt/device/${Uri.encodeComponent(attemptId)}/complete',
+        body: {'attempt_secret': attemptSecret},
+      ),
+    );
+    await _adoptSession(response);
+    return response;
+  }
+
+  Future<void> cancelChatGptDeviceLogin({
+    required String attemptId,
+    required String attemptSecret,
+  }) async {
+    await _request(
+      'DELETE',
+      '/api/auth/chatgpt/device/${Uri.encodeComponent(attemptId)}',
+      body: {'attempt_secret': attemptSecret},
+    );
+  }
+
+  Future<Map<String, dynamic>> codexAccount() async =>
+      _map(await _request('GET', '/api/codex/account'));
+
+  Future<List<String>> codexModels() async {
+    final values = _map(await _request('GET', '/api/codex/models'))['models'];
+    return values is List
+        ? values
+              .map((item) => item.toString().trim())
+              .where((item) => item.isNotEmpty)
+              .toList(growable: false)
+        : const [];
+  }
+
+  Future<Map<String, dynamic>> codexQuota() async =>
+      _map(await _request('GET', '/api/codex/quota'));
+
+  Future<Map<String, dynamic>> codexHistory({
+    required bool fullRefresh,
+  }) async => _map(
+    await _request(
+      'GET',
+      '/api/codex/history${fullRefresh ? '?full_refresh=1' : ''}',
+    ),
+  );
+
+  Future<void> logoutCodex() async {
+    await _request('DELETE', '/api/codex/session');
   }
 
   Future<void> seedStarterData(int userId) async {
@@ -293,6 +461,32 @@ class AppDatabase {
       ),
     );
     return PendingWordEnrichmentState.fromMap(data);
+  }
+
+  Future<int> applyWordEnrichments({
+    required int userId,
+    required List<ParsedWord> words,
+  }) async {
+    final data = _map(
+      await _request(
+        'POST',
+        '/api/words/$userId/apply-enrichment',
+        body: {
+          'words': [
+            for (final word in words)
+              {
+                'word': word.word,
+                'phonetic': word.phonetic,
+                'part_of_speech': word.partOfSpeech,
+                'translation': word.translation,
+                'example_en': word.exampleEnglish,
+                'example_zh': word.exampleChinese,
+              },
+          ],
+        },
+      ),
+    );
+    return (data['updated'] as num?)?.toInt() ?? 0;
   }
 
   Future<void> recordReview({
@@ -568,5 +762,49 @@ class AppDatabase {
     }
     if (model.toLowerCase() == 'deepseek-v4-pro') return 'deepseek-v4-pro';
     return model;
+  }
+}
+
+/// A retryable failure to receive an HTTP response from the backend.
+class ServerConnectionException implements Exception {
+  const ServerConnectionException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Keeps only the AILearningOS device bearer on the device. Provider
+/// credentials remain inside the server's per-account CODEX_HOME directory.
+class _ServerSessionStore {
+  static const _key = 'ailo.server_session_bearer.v1';
+  static const _storage = FlutterSecureStorage();
+  String? _memoryFallback;
+
+  Future<String?> read() async {
+    try {
+      return await _storage.read(key: _key) ?? _memoryFallback;
+    } catch (_) {
+      // Widget tests and unsupported desktop key stores still work for the
+      // current process; production Android/Windows use the secure backend.
+      return _memoryFallback;
+    }
+  }
+
+  Future<void> write(String value) async {
+    _memoryFallback = value;
+    try {
+      await _storage.write(key: _key, value: value);
+    } catch (_) {
+      // See read(): do not persist insecurely as a fallback.
+    }
+  }
+
+  Future<void> clear() async {
+    _memoryFallback = null;
+    try {
+      await _storage.delete(key: _key);
+    } catch (_) {
+      // Best-effort when no platform key store is available.
+    }
   }
 }

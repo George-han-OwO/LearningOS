@@ -3,10 +3,14 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:server/api/router.dart';
+import 'package:server/core/ai/ai_service.dart';
+import 'package:server/core/ai/deepseek_service.dart';
 import 'package:server/core/ai/hybrid_ai_service.dart';
 import 'package:server/core/ai/pending_word_enrichment.dart';
+import 'package:server/core/codex/server_codex_gateway.dart';
 import 'package:server/core/security/secret_vault.dart';
 import 'package:server/data/app_database.dart';
+import 'package:server/domain/models.dart';
 import 'package:server/domain/word_parser.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart';
@@ -18,6 +22,8 @@ void main() {
   late AppDatabase database;
   late Directory dataDirectory;
   late String host;
+  late _RecordingDeepSeekService recordingDeepSeek;
+  late _RecordingCodexGateway recordingCodex;
 
   setUpAll(() async {
     dataDirectory = await Directory.systemTemp.createTemp('ailo-server-test-');
@@ -25,9 +31,20 @@ void main() {
       dataDirectory: dataDirectory,
       secretVault: SecretVault.forTesting(List<int>.filled(32, 41)),
     );
-    final aiService = HybridAiService();
-    final processor = PendingWordEnrichmentProcessor(database, aiService);
-    final api = ApiRouter(database, aiService, processor);
+    recordingDeepSeek = _RecordingDeepSeekService();
+    recordingCodex = _RecordingCodexGateway(database);
+    final aiService = HybridAiService(deepSeekService: recordingDeepSeek);
+    final processor = PendingWordEnrichmentProcessor(
+      database,
+      aiService,
+      codexGateway: recordingCodex,
+    );
+    final api = ApiRouter(
+      database,
+      aiService,
+      processor,
+      codexGateway: recordingCodex,
+    );
     final handler = Pipeline()
         .addMiddleware(corsHeaders())
         .addHandler(api.router.call);
@@ -48,6 +65,111 @@ void main() {
     expect(response.statusCode, 200);
     expect(response.body, 'OK');
   });
+
+  test(
+    'version advertises every implemented AI feature as dual-routed',
+    () async {
+      final response = await http.get(Uri.parse('$host/version'));
+      expect(response.statusCode, 200);
+      final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      expect(
+        payload['ai_provider_switch'],
+        'persistent-strict-no-silent-fallback',
+      );
+      expect(payload['codex_gateway_enabled'], isTrue);
+      expect(payload['ai_features'], {
+        'word_enrichment': 'selected_provider',
+        'conversation_notes': 'selected_provider',
+        'email_summaries': 'selected_provider',
+        'feishu_summaries': 'selected_provider',
+        'course_daily_plan': 'selected_provider',
+        'ai_chat': 'selected_provider',
+      });
+    },
+  );
+
+  test(
+    'AI keys are account-bound and stored/candidate tests never overwrite',
+    () async {
+      final first = await database.createUser(
+        email: 'ai-owner-one@test.local',
+        displayName: 'AI Owner One',
+        passwordHash: '',
+        passwordSalt: '',
+      );
+      final second = await database.createUser(
+        email: 'ai-owner-two@test.local',
+        displayName: 'AI Owner Two',
+        passwordHash: '',
+        passwordSalt: '',
+      );
+      await database.saveAiSettings(
+        first.id,
+        const AiConnectionSettings(
+          enabled: true,
+          apiKey: 'first-account-old-key',
+          model: AiConnectionSettings.defaultModel,
+        ),
+      );
+      await database.saveAiSettings(
+        second.id,
+        const AiConnectionSettings(
+          enabled: true,
+          apiKey: 'second-account-key',
+          model: AiConnectionSettings.defaultModel,
+        ),
+      );
+      final session = await database.createAuthSession(first.id);
+      final headers = {'Authorization': 'Bearer ${session.token}'};
+
+      final ownSettings = await http.get(
+        Uri.parse('$host/api/users/${first.id}/settings/ai'),
+        headers: headers,
+      );
+      expect(ownSettings.statusCode, 200);
+      expect(ownSettings.body, isNot(contains('first-account-old-key')));
+      expect(jsonDecode(ownSettings.body)['api_key_configured'], isTrue);
+
+      final otherSettings = await http.get(
+        Uri.parse('$host/api/users/${second.id}/settings/ai'),
+        headers: headers,
+      );
+      expect(otherSettings.statusCode, 403);
+
+      recordingDeepSeek.seenKeys.clear();
+      final storedTest = await http.post(
+        Uri.parse('$host/api/users/${first.id}/settings/ai/test'),
+        headers: {'Content-Type': 'application/json', ...headers},
+        body: jsonEncode({
+          'enabled': true,
+          'api_key': 'must-not-be-used-for-stored-test',
+          'key_source': 'stored',
+        }),
+      );
+      expect(storedTest.statusCode, 200);
+      expect(recordingDeepSeek.seenKeys.last, 'first-account-old-key');
+
+      final candidateTest = await http.post(
+        Uri.parse('$host/api/users/${first.id}/settings/ai/test'),
+        headers: {'Content-Type': 'application/json', ...headers},
+        body: jsonEncode({
+          'enabled': true,
+          'api_key': 'new-candidate-key',
+          'key_source': 'candidate',
+        }),
+      );
+      expect(candidateTest.statusCode, 200);
+      expect(recordingDeepSeek.seenKeys.last, 'new-candidate-key');
+      expect(
+        (await database.aiSettings(first.id)).apiKey,
+        'first-account-old-key',
+      );
+      expect(
+        (await database.aiSettings(second.id)).apiKey,
+        'second-account-key',
+      );
+    },
+  );
 
   test(
     'unknown words remain in the 30-second queue without an API key',
@@ -102,6 +224,74 @@ void main() {
       expect(result['retry_interval_seconds'], 30);
     },
   );
+
+  test('AI chat uses only the account-selected provider', () async {
+    final user = await database.createUser(
+      email: 'routing-${DateTime.now().microsecondsSinceEpoch}@test.local',
+      displayName: 'AI Routing Test',
+      passwordHash: '',
+      passwordSalt: '',
+    );
+    final session = await database.createAuthSession(user.id);
+    final headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ${session.token}',
+    };
+
+    await database.saveAiSettings(
+      user.id,
+      const AiConnectionSettings(
+        enabled: true,
+        apiKey: 'routing-deepseek-key',
+        model: AiConnectionSettings.defaultModel,
+        provider: AiProvider.deepSeek,
+      ),
+    );
+    recordingDeepSeek.completedPrompts.clear();
+    recordingCodex.completedPrompts.clear();
+    final deepSeekResponse = await http.post(
+      Uri.parse('$host/api/users/${user.id}/ai/chat'),
+      headers: headers,
+      body: jsonEncode({'prompt': 'route-deepseek'}),
+    );
+    expect(deepSeekResponse.statusCode, 200);
+    expect(
+      jsonDecode(deepSeekResponse.body)['result'],
+      'deepseek:route-deepseek',
+    );
+    expect(recordingDeepSeek.completedPrompts, ['route-deepseek']);
+    expect(recordingCodex.completedPrompts, isEmpty);
+
+    await database.saveAiSettings(
+      user.id,
+      const AiConnectionSettings(
+        enabled: true,
+        apiKey: '',
+        model: AiConnectionSettings.defaultModel,
+        provider: AiProvider.codex,
+        codexModel: AiConnectionSettings.defaultCodexModel,
+      ),
+    );
+    final codexResponse = await http.post(
+      Uri.parse('$host/api/users/${user.id}/ai/chat'),
+      headers: headers,
+      body: jsonEncode({'prompt': 'route-codex'}),
+    );
+    expect(codexResponse.statusCode, 200);
+    expect(jsonDecode(codexResponse.body)['result'], 'codex:route-codex');
+    expect(recordingDeepSeek.completedPrompts, ['route-deepseek']);
+    expect(recordingCodex.completedPrompts, ['route-codex']);
+
+    recordingCodex.failCompletion = true;
+    final failedCodexResponse = await http.post(
+      Uri.parse('$host/api/users/${user.id}/ai/chat'),
+      headers: headers,
+      body: jsonEncode({'prompt': 'do-not-fallback'}),
+    );
+    recordingCodex.failCompletion = false;
+    expect(failedCodexResponse.statusCode, isNot(200));
+    expect(recordingDeepSeek.completedPrompts, ['route-deepseek']);
+  });
 
   test(
     'idle word worker stops and wakes when a pending word is imported',
@@ -413,4 +603,47 @@ void main() {
     expect(after[1]['status'], 'available');
     expect(after.first['attempts'], 2);
   });
+}
+
+class _RecordingDeepSeekService extends DeepSeekService {
+  final List<String> seenKeys = [];
+  final List<String> completedPrompts = [];
+
+  @override
+  Future<String> completeText({
+    required AiConnectionSettings settings,
+    required String prompt,
+  }) async {
+    completedPrompts.add(prompt);
+    return 'deepseek:$prompt';
+  }
+
+  @override
+  Future<AiConnectionProbe> testConnection(
+    AiConnectionSettings settings,
+  ) async {
+    seenKeys.add(settings.apiKey);
+    return const AiConnectionProbe(ok: true, message: 'ok');
+  }
+}
+
+class _RecordingCodexGateway extends ServerCodexGateway {
+  _RecordingCodexGateway(super.database);
+
+  final List<String> completedPrompts = [];
+  bool failCompletion = false;
+
+  @override
+  bool get enabled => true;
+
+  @override
+  Future<String> completeText(
+    AppUser user, {
+    required AiConnectionSettings settings,
+    required String prompt,
+  }) async {
+    completedPrompts.add(prompt);
+    if (failCompletion) throw StateError('Codex test failure');
+    return 'codex:$prompt';
+  }
 }

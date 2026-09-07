@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
 import 'package:sqflite_common/sqlite_api.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
@@ -14,10 +15,18 @@ import '../domain/word_parser.dart';
 import '../core/security/secret_vault.dart';
 
 class AppDatabase {
-  AppDatabase._(this._database, this.filePath, this._secretVault);
+  AppDatabase._(
+    this._database,
+    this.filePath,
+    this.dataDirectory,
+    this._secretVault,
+  );
 
   final Database _database;
   final String filePath;
+
+  /// Private server-owned directory. It is deliberately never exposed by API.
+  final Directory dataDirectory;
   final SecretVault _secretVault;
 
   bool get secretVaultReady => _secretVault.ready;
@@ -41,7 +50,7 @@ class AppDatabase {
     final database = await factory.openDatabase(
       databasePath,
       options: OpenDatabaseOptions(
-        version: 9,
+        version: 14,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -58,6 +67,14 @@ class AppDatabase {
           if (oldVersion >= 5 && oldVersion < 8) {
             await _addAutoNoteScheduleColumns(db);
           }
+          if (oldVersion < 10) await _createUserAiSettingsTable(db);
+          if (oldVersion < 11) {
+            await _createAuthSessionsTable(db);
+            await _createCodexUserHomesTable(db);
+          }
+          if (oldVersion < 12) await _migrateRetiredCodexModels(db);
+          if (oldVersion < 13) await _createCanvasConnectionsTable(db);
+          if (oldVersion < 14) await _createCodexLoginAttemptsTable(db);
         },
       ),
     );
@@ -65,9 +82,15 @@ class AppDatabase {
     final appDatabase = AppDatabase._(
       database,
       databasePath,
+      supportDirectory,
       secretVault ?? SecretVault.fromEnvironment(),
     );
     await appDatabase._migrateAndValidateAiApiKey();
+    final currentUser = await appDatabase.currentUser();
+    if (currentUser != null) {
+      await appDatabase._migrateLegacyAiSettingsForUser(currentUser.id);
+    }
+    await appDatabase._validateUserAiApiKeys();
     return appDatabase;
   }
 
@@ -158,6 +181,11 @@ class AppDatabase {
     ''');
     await _createLoginSecurityTable(db);
     await _createAiSettingsTable(db);
+    await _createUserAiSettingsTable(db);
+    await _createAuthSessionsTable(db);
+    await _createCodexUserHomesTable(db);
+    await _createCanvasConnectionsTable(db);
+    await _createCodexLoginAttemptsTable(db);
     await _createExternalAuthIndex(db);
     await _createConversationSyncTables(db);
     await _createEmailSyncTables(db);
@@ -184,6 +212,68 @@ class AppDatabase {
       CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      )
+    ''');
+  }
+
+  static Future<void> _createUserAiSettingsTable(Database db) {
+    return db.execute('''
+      CREATE TABLE IF NOT EXISTS user_ai_settings (
+        user_id INTEGER PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        provider TEXT NOT NULL DEFAULT 'deepseek',
+        deepseek_model TEXT NOT NULL DEFAULT 'deepseek-v4-flash',
+        codex_model TEXT NOT NULL DEFAULT 'gpt-5.6-terra',
+        deepseek_api_key_encrypted_v1 TEXT NOT NULL DEFAULT '',
+        deepseek_api_key_hint TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+  }
+
+  static Future<void> _migrateRetiredCodexModels(Database db) async {
+    await db.rawUpdate(
+      "UPDATE user_ai_settings SET codex_model = ? WHERE codex_model = ? OR TRIM(codex_model) = ''",
+      const ['gpt-5.6-terra', 'gpt-5.4'],
+    );
+    await db.rawUpdate(
+      'UPDATE user_ai_settings SET codex_model = ? WHERE codex_model = ?',
+      const ['gpt-5.6-luna', 'gpt-5.4-mini'],
+    );
+  }
+
+  /// Hashed per-device bearer sessions. The raw bearer is returned exactly
+  /// once when the session is issued and is never written to SQLite.
+  static Future<void> _createAuthSessionsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS auth_sessions_user_index ON auth_sessions(user_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS auth_sessions_expiry_index ON auth_sessions(expires_at)',
+    );
+  }
+
+  /// Opaque per-account names for private CODEX_HOME directories. ChatGPT
+  /// credentials remain in these server-only directories; neither the raw
+  /// directory nor auth.json is ever sent to a client.
+  static Future<void> _createCodexUserHomesTable(Database db) {
+    return db.execute('''
+      CREATE TABLE IF NOT EXISTS codex_user_homes (
+        user_id INTEGER PRIMARY KEY,
+        home_id TEXT NOT NULL UNIQUE,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     ''');
   }
@@ -487,12 +577,97 @@ class AppDatabase {
     });
   }
 
-  Future<AiConnectionSettings> aiSettings() async {
-    final rows = await _database.query('app_settings');
+  Future<void> _validateUserAiApiKeys() async {
+    final rows = await _database.query(
+      'user_ai_settings',
+      columns: const ['user_id', 'deepseek_api_key_encrypted_v1'],
+      where: "deepseek_api_key_encrypted_v1 <> ''",
+    );
+    if (rows.isNotEmpty && !_secretVault.ready) {
+      throw StateError(
+        '数据库中已有账号级加密 DeepSeek API Key，但 '
+        '${SecretVault.environmentVariable} 未配置。',
+      );
+    }
+    for (final row in rows) {
+      final cipherText = (row['deepseek_api_key_encrypted_v1'] as String? ?? '')
+          .trim();
+      try {
+        await _secretVault.decrypt(cipherText);
+      } on SecretVaultException catch (error) {
+        throw StateError('无法解密用户 ${row['user_id']} 的 DeepSeek API Key：$error');
+      }
+    }
+  }
+
+  Future<void> _migrateLegacyAiSettingsForUser(int userId) async {
+    final existing = await _database.query(
+      'user_ai_settings',
+      columns: const ['user_id'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    final legacyRows = await _database.query(
+      'app_settings',
+      where: 'key IN (?, ?, ?, ?, ?, ?)',
+      whereArgs: const [
+        'deepseek_enabled',
+        'deepseek_model',
+        'ai_provider',
+        'codex_model',
+        'deepseek_api_key_encrypted_v1',
+        'deepseek_api_key_hint',
+      ],
+    );
+    if (legacyRows.isEmpty) return;
     final values = <String, String>{
-      for (final row in rows) row['key']! as String: row['value']! as String,
+      for (final row in legacyRows)
+        row['key']! as String: row['value']! as String,
     };
-    final cipherText = values['deepseek_api_key_encrypted_v1']?.trim() ?? '';
+    await _database.transaction((transaction) async {
+      if (existing.isEmpty) {
+        await transaction.insert('user_ai_settings', {
+          'user_id': userId,
+          'enabled': values['deepseek_enabled'] == '1' ? 1 : 0,
+          'provider': AiProvider.fromApiValue(values['ai_provider']).apiValue,
+          'deepseek_model': _normalizeModel(values['deepseek_model'] ?? ''),
+          'codex_model': AiConnectionSettings.migrateCodexModel(
+            values['codex_model'] ?? '',
+          ),
+          'deepseek_api_key_encrypted_v1':
+              values['deepseek_api_key_encrypted_v1']?.trim() ?? '',
+          'deepseek_api_key_hint': values['deepseek_api_key_hint']?.trim(),
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+      }
+      await transaction.delete(
+        'app_settings',
+        where: 'key IN (?, ?, ?, ?, ?, ?)',
+        whereArgs: const [
+          'deepseek_enabled',
+          'deepseek_model',
+          'ai_provider',
+          'codex_model',
+          'deepseek_api_key_encrypted_v1',
+          'deepseek_api_key_hint',
+        ],
+      );
+    });
+  }
+
+  Future<AiConnectionSettings> aiSettings(int userId) async {
+    await _migrateLegacyAiSettingsForUser(userId);
+    final rows = await _database.query(
+      'user_ai_settings',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return AiConnectionSettings.empty;
+    final row = rows.first;
+    final cipherText = (row['deepseek_api_key_encrypted_v1'] as String? ?? '')
+        .trim();
     var apiKey = '';
     if (cipherText.isNotEmpty) {
       try {
@@ -502,34 +677,42 @@ class AppDatabase {
       }
     }
     return AiConnectionSettings(
-      enabled: values['deepseek_enabled'] == '1',
+      enabled: row['enabled'] == 1,
       apiKey: apiKey,
-      model: _normalizeModel(values['deepseek_model'] ?? ''),
+      model: _normalizeModel(row['deepseek_model'] as String? ?? ''),
+      provider: AiProvider.fromApiValue(row['provider']),
+      codexModel: AiConnectionSettings.migrateCodexModel(
+        row['codex_model'] as String? ?? '',
+      ),
     );
   }
 
-  Future<bool> aiApiKeyConfigured() async {
+  Future<bool> aiApiKeyConfigured(int userId) async {
+    await _migrateLegacyAiSettingsForUser(userId);
     final rows = await _database.query(
-      'app_settings',
-      columns: const ['value'],
-      where: 'key = ?',
-      whereArgs: const ['deepseek_api_key_encrypted_v1'],
+      'user_ai_settings',
+      columns: const ['deepseek_api_key_encrypted_v1'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
       limit: 1,
     );
     return rows.isNotEmpty &&
-        (rows.first['value'] as String? ?? '').trim().isNotEmpty;
+        (rows.first['deepseek_api_key_encrypted_v1'] as String? ?? '')
+            .trim()
+            .isNotEmpty;
   }
 
-  Future<String?> aiApiKeyHint() async {
+  Future<String?> aiApiKeyHint(int userId) async {
+    await _migrateLegacyAiSettingsForUser(userId);
     final rows = await _database.query(
-      'app_settings',
-      columns: const ['value'],
-      where: 'key = ?',
-      whereArgs: const ['deepseek_api_key_hint'],
+      'user_ai_settings',
+      columns: const ['deepseek_api_key_hint'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
       limit: 1,
     );
     if (rows.isEmpty) return null;
-    final hint = (rows.first['value'] as String? ?? '').trim();
+    final hint = (rows.first['deepseek_api_key_hint'] as String? ?? '').trim();
     return hint.isEmpty ? null : hint;
   }
 
@@ -537,9 +720,11 @@ class AppDatabase {
   /// preserves the already configured key so toggling the feature does not
   /// require the client to receive the secret again.
   Future<void> saveAiSettings(
+    int userId,
     AiConnectionSettings settings, {
     bool clearApiKey = false,
   }) async {
+    await _migrateLegacyAiSettingsForUser(userId);
     final apiKey = settings.apiKey.trim();
     String? encrypted;
     String? hint;
@@ -551,42 +736,30 @@ class AppDatabase {
       hint = _keyHint(apiKey);
     }
 
-    await _database.transaction((transaction) async {
-      await transaction.insert('app_settings', {
-        'key': 'deepseek_enabled',
-        'value': settings.enabled ? '1' : '0',
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-      await transaction.insert('app_settings', {
-        'key': 'deepseek_model',
-        'value': _normalizeModel(settings.model),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-
-      if (clearApiKey) {
-        await transaction.delete(
-          'app_settings',
-          where: 'key IN (?, ?, ?)',
-          whereArgs: const [
-            'deepseek_api_key',
-            'deepseek_api_key_encrypted_v1',
-            'deepseek_api_key_hint',
-          ],
-        );
-      } else if (encrypted != null && hint != null) {
-        await transaction.insert('app_settings', {
-          'key': 'deepseek_api_key_encrypted_v1',
-          'value': encrypted,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-        await transaction.insert('app_settings', {
-          'key': 'deepseek_api_key_hint',
-          'value': hint,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-        await transaction.delete(
-          'app_settings',
-          where: 'key = ?',
-          whereArgs: const ['deepseek_api_key'],
-        );
-      }
-    });
+    final existingRows = await _database.query(
+      'user_ai_settings',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    final existing = existingRows.isEmpty ? null : existingRows.first;
+    await _database.insert('user_ai_settings', {
+      'user_id': userId,
+      'enabled': settings.enabled ? 1 : 0,
+      'provider': settings.provider.apiValue,
+      'deepseek_model': _normalizeModel(settings.model),
+      'codex_model': AiConnectionSettings.migrateCodexModel(
+        settings.codexModel,
+      ),
+      'deepseek_api_key_encrypted_v1': clearApiKey
+          ? ''
+          : encrypted ??
+                (existing?['deepseek_api_key_encrypted_v1'] as String? ?? ''),
+      'deepseek_api_key_hint': clearApiKey
+          ? null
+          : hint ?? existing?['deepseek_api_key_hint'],
+      'updated_at': DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<AppUser> createUser({
@@ -613,6 +786,16 @@ class AppDatabase {
       displayName: normalizedName,
       createdAt: createdAt,
     );
+  }
+
+  Future<AppUser?> userForId(int userId) async {
+    final rows = await _database.query(
+      'users',
+      where: 'id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : AppUser.fromMap(rows.first);
   }
 
   Future<AppUser?> userForExternalAccount({
@@ -692,6 +875,211 @@ class AppDatabase {
   }
 
   Future<void> clearSession() => _database.delete('app_session');
+
+  /// Issues a long-lived, device-specific session. Only a SHA-256 digest is
+  /// persisted, so a database backup cannot be used as a bearer credential.
+  Future<AuthSession> createAuthSession(
+    int userId, {
+    Duration validity = const Duration(days: 180),
+  }) async {
+    final now = DateTime.now().toUtc();
+    final rawToken = _newBearerToken();
+    await _database.insert('auth_sessions', {
+      'token_hash': _sessionTokenHash(rawToken),
+      'user_id': userId,
+      'created_at': now.toIso8601String(),
+      'expires_at': now.add(validity).toIso8601String(),
+      'last_used_at': now.toIso8601String(),
+    });
+    return AuthSession(
+      token: rawToken,
+      userId: userId,
+      expiresAt: now.add(validity),
+    );
+  }
+
+  /// Resolves an active bearer token to its account. Expired sessions are
+  /// removed during lookup so they cannot be revived after a server restart.
+  Future<AppUser?> userForSessionToken(String token) async {
+    final normalized = token.trim();
+    if (normalized.length < 32 || normalized.length > 512) return null;
+    final rows = await _database.rawQuery(
+      '''
+      SELECT users.*,
+             auth_sessions.expires_at AS session_expires_at
+      FROM auth_sessions
+      INNER JOIN users ON users.id = auth_sessions.user_id
+      WHERE auth_sessions.token_hash = ?
+      LIMIT 1
+      ''',
+      [_sessionTokenHash(normalized)],
+    );
+    if (rows.isEmpty) return null;
+    final expiresAt = DateTime.tryParse(
+      rows.first['session_expires_at']?.toString() ?? '',
+    )?.toUtc();
+    if (expiresAt == null || !expiresAt.isAfter(DateTime.now().toUtc())) {
+      await _database.delete(
+        'auth_sessions',
+        where: 'token_hash = ?',
+        whereArgs: [_sessionTokenHash(normalized)],
+      );
+      return null;
+    }
+    await _database.update(
+      'auth_sessions',
+      {'last_used_at': DateTime.now().toUtc().toIso8601String()},
+      where: 'token_hash = ?',
+      whereArgs: [_sessionTokenHash(normalized)],
+    );
+    return AppUser.fromMap(rows.first);
+  }
+
+  Future<void> deleteAuthSession(String token) async {
+    final normalized = token.trim();
+    if (normalized.isEmpty) return;
+    await _database.delete(
+      'auth_sessions',
+      where: 'token_hash = ?',
+      whereArgs: [_sessionTokenHash(normalized)],
+    );
+  }
+
+  Future<void> bindCodexHome({
+    required int userId,
+    required String homeId,
+  }) async {
+    final normalized = homeId.trim();
+    if (!RegExp(r'^[A-Za-z0-9_-]{24,160}$').hasMatch(normalized)) {
+      throw ArgumentError.value(homeId, 'homeId', '不是有效的内部 Codex 目录标识。');
+    }
+    await _database.insert('codex_user_homes', {
+      'user_id': userId,
+      'home_id': normalized,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  static Future<void> _createCodexLoginAttemptsTable(Database db) =>
+      db.execute('''
+    CREATE TABLE IF NOT EXISTS codex_login_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      secret_hash TEXT NOT NULL,
+      home_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      target_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      account_metadata TEXT,
+      error_message TEXT
+    )
+  ''');
+
+  Future<void> saveCodexLoginAttempt(Map<String, Object?> row) async {
+    await _database.insert('codex_login_attempts', row);
+  }
+
+  Future<List<Map<String, Object?>>> activeCodexLoginAttempts() =>
+      _database.query(
+        'codex_login_attempts',
+        where: 'expires_at > ?',
+        whereArgs: [DateTime.now().toUtc().toIso8601String()],
+      );
+
+  Future<void> finishCodexLoginAttempt({
+    required String attemptId,
+    required int userId,
+    required String homeId,
+    required Map<String, Object?> accountMetadata,
+  }) async {
+    await _database.transaction((txn) async {
+      final rows = await txn.query(
+        'codex_login_attempts',
+        where: 'attempt_id = ? AND status = ? AND expires_at > ?',
+        whereArgs: [
+          attemptId,
+          'pending',
+          DateTime.now().toUtc().toIso8601String(),
+        ],
+      );
+      if (rows.isEmpty) throw StateError('登录请求已取消或过期。');
+      final owner = rows.single['owner_user_id'];
+      if ((owner != null && owner != userId) ||
+          rows.single['home_id'] != homeId) {
+        throw StateError('登录请求账号不匹配。');
+      }
+      await txn.insert('codex_user_homes', {
+        'user_id': userId,
+        'home_id': homeId,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update(
+        'codex_login_attempts',
+        {
+          'status': 'completed',
+          'target_user_id': userId,
+          'account_metadata': jsonEncode(accountMetadata),
+        },
+        where: 'attempt_id = ?',
+        whereArgs: [attemptId],
+      );
+    });
+  }
+
+  Future<void> endCodexLoginAttempt(
+    String attemptId,
+    String status, {
+    String? message,
+  }) async {
+    await _database.update(
+      'codex_login_attempts',
+      {'status': status, 'error_message': message},
+      where: 'attempt_id = ? AND status = ?',
+      whereArgs: [attemptId, 'pending'],
+    );
+  }
+
+  Future<String?> codexHomeIdForUser(int userId) async {
+    final rows = await _database.query(
+      'codex_user_homes',
+      columns: const ['home_id'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.single['home_id']?.toString();
+  }
+
+  Future<List<int>> userIdsWithCodexHomes() async {
+    final rows = await _database.query(
+      'codex_user_homes',
+      columns: const ['user_id'],
+      orderBy: 'user_id ASC',
+    );
+    return rows
+        .map((row) => (row['user_id'] as num).toInt())
+        .toList(growable: false);
+  }
+
+  Future<void> clearCodexHomeForUser(int userId) {
+    return _database.delete(
+      'codex_user_homes',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+  }
+
+  static String _newBearerToken() {
+    final bytes = List<int>.generate(
+      48,
+      (_) => math.Random.secure().nextInt(256),
+    );
+    return base64UrlEncode(bytes).replaceAll('=', '');
+  }
+
+  static String _sessionTokenHash(String token) =>
+      sha256.convert(utf8.encode(token)).toString();
 
   Future<void> seedStarterData(int userId) async {
     final countRows = await _database.rawQuery(
@@ -1452,6 +1840,58 @@ class AppDatabase {
     );
   }
 
+  static Future<void> _createCanvasConnectionsTable(Database db) =>
+      db.execute('''
+    CREATE TABLE IF NOT EXISTS canvas_connections (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      encrypted_connection TEXT NOT NULL
+    )
+  ''');
+
+  // Encrypt the entire binding so a token cannot be moved to another host or
+  // user by changing a plaintext database column. Never return this via HTTP.
+  Future<void> saveCanvasConnection(
+    int userId,
+    Map<String, dynamic> value,
+  ) async {
+    final encrypted = await _secretVault.encrypt(
+      jsonEncode({...value, 'user_id': userId}),
+    );
+    await _database.insert('canvas_connections', {
+      'user_id': userId,
+      'encrypted_connection': encrypted,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> canvasConnection(int userId) async {
+    final rows = await _database.query(
+      'canvas_connections',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final value =
+        jsonDecode(
+              await _secretVault.decrypt(
+                rows.single['encrypted_connection'] as String,
+              ),
+            )
+            as Map<String, dynamic>;
+    if (value['user_id'] != userId) {
+      throw const SecretVaultException('Canvas 账号绑定校验失败。');
+    }
+    return value;
+  }
+
+  Future<void> clearCanvasConnection(int userId) async {
+    await _database.delete(
+      'canvas_connections',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+  }
+
   Future<void> close() => _database.close();
 
   static String _normalizeModel(String value) {
@@ -1485,4 +1925,16 @@ class AppDatabase {
     final day = value.day.toString().padLeft(2, '0');
     return '${value.year}-$month-$day';
   }
+}
+
+class AuthSession {
+  const AuthSession({
+    required this.token,
+    required this.userId,
+    required this.expiresAt,
+  });
+
+  final String token;
+  final int userId;
+  final DateTime expiresAt;
 }

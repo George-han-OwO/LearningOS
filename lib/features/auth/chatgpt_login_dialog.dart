@@ -97,7 +97,7 @@ Future<void> _showChallengeSheet(
                       children: [
                         const Expanded(
                           child: Text(
-                            'ChatGPT 登录 · chatgpt5.5',
+                            'ChatGPT 登录 · Codex',
                             style: AppTextStyles.title,
                           ),
                         ),

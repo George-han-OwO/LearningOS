@@ -128,6 +128,13 @@ class LocalCodexChatGptAuthService extends ChatGptAuthService {
   }
 
   @override
+  Future<List<String>> listModels() async {
+    if (!supported) return const [];
+    await _ensureChatGptSubscription();
+    return _withClient((client) => client.listModels());
+  }
+
+  @override
   Future<CodexHistoryBatch> readCodexHistory({bool fullRefresh = false}) async {
     if (!supported) {
       throw StateError('当前平台不支持 Codex 会话读取。');

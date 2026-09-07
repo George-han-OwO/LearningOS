@@ -5,6 +5,31 @@ void main() {
   test('AI connection defaults to DeepSeek-V4-flash', () {
     expect(AiConnectionSettings.defaultModel, 'deepseek-v4-flash');
     expect(AiConnectionSettings.empty.model, 'deepseek-v4-flash');
+    expect(AiConnectionSettings.defaultCodexModel, 'gpt-5.6-terra');
+    expect(AiConnectionSettings.empty.provider, AiProvider.deepSeek);
+  });
+
+  test('retired Codex models migrate and stay inside model/list', () {
+    expect(
+      AiConnectionSettings.selectCodexModel(const [
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+      ], requested: 'gpt-5.4'),
+      'gpt-5.6-terra',
+    );
+    expect(
+      AiConnectionSettings.selectCodexModel(const [
+        'future-codex-model',
+      ], requested: 'gpt-5.4'),
+      'future-codex-model',
+    );
+    expect(AiConnectionSettings.selectCodexModel(const []), isNull);
+  });
+
+  test('AI provider setting round-trips the API value', () {
+    expect(AiProvider.fromApiValue('codex'), AiProvider.codex);
+    expect(AiProvider.fromApiValue('deepseek'), AiProvider.deepSeek);
+    expect(AiProvider.codex.apiValue, 'codex');
   });
 
   test(

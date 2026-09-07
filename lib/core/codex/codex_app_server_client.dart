@@ -566,7 +566,7 @@ class CodexAppServerClient {
       !Platform.isAndroid && !Platform.isIOS && !Platform.isFuchsia;
 
   bool get isStarted => _started && !_disposed;
-  bool get isInitialized => _initialized && !_disposed;
+  bool get isInitialized => _initialized && !_disposed && !_transportEnded;
 
   Stream<CodexLoginCompleted> get loginCompletions => _loginCompletions.stream;
 
@@ -733,18 +733,33 @@ class CodexAppServerClient {
 
   Future<List<String>> listModels() async {
     _ensureInitialized();
-    final result = await _request('model/list');
-    final map = _resultMap(result, 'model/list');
-    final models = map['models'];
-    if (models is! List) return const [];
-    return [
-      for (final model in models)
-        if (model is Map)
-          (_stringValue(model['id']) ??
-                  _stringValue(model['name']) ??
-                  _stringValue(model['slug'])) ??
-              '',
-    ].where((item) => item.isNotEmpty).toList(growable: false);
+    final modelIds = <String>{};
+    String? cursor;
+    do {
+      final result = await _request(
+        'model/list',
+        params: {'limit': 100, 'includeHidden': false, 'cursor': ?cursor},
+      );
+      final map = _resultMap(result, 'model/list');
+      // App Server's public protocol returns the model collection in `data`.
+      // Keep the legacy key for compatibility with older local builds.
+      final models = map['data'] ?? map['models'];
+      if (models is List) {
+        for (final model in models) {
+          if (model is! Map) continue;
+          final id =
+              _stringValue(model['id']) ??
+              _stringValue(model['model']) ??
+              _stringValue(model['name']) ??
+              _stringValue(model['slug']);
+          if (id != null) modelIds.add(id);
+        }
+      }
+      final next = _stringValue(map['nextCursor']);
+      if (next == null || next == cursor) break;
+      cursor = next;
+    } while (true);
+    return modelIds.toList(growable: false);
   }
 
   /// Reads the current ChatGPT Codex usage windows. This is subscription

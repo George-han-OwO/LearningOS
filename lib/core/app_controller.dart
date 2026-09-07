@@ -37,6 +37,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   LoginSecurityState _loginSecurity = const LoginSecurityState.clear();
   AiConnectionSettings _aiSettings = AiConnectionSettings.empty;
   ChatGptAuthState _chatGptAuth = const ChatGptAuthState.unavailable();
+  List<String> _codexModels = const [];
   ChatGptCodexQuotaState _codexQuota =
       const ChatGptCodexQuotaState.unavailable();
   CodexHistorySyncState _codexHistory = const CodexHistorySyncState.idle();
@@ -71,6 +72,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   LoginSecurityState get loginSecurity => _loginSecurity;
   AiConnectionSettings get aiSettings => _aiSettings;
   ChatGptAuthState get chatGptAuth => _chatGptAuth;
+  List<String> get codexModels => _codexModels;
   ChatGptCodexQuotaState get codexQuota => _codexQuota;
   CodexHistorySyncState get codexHistory => _codexHistory;
   ConversationSyncState get conversationSyncState => _conversationSyncState;
@@ -79,17 +81,32 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   EmailSyncState emailSyncState(EmailProvider provider) =>
       _emailSyncStates[provider] ?? EmailSyncState.defaultFor(provider);
   bool get chatGptSupported => _chatGptAuthService.supported;
+  bool get usesRemoteCodexGateway => _chatGptAuthService.usesRemoteGateway;
   bool get busy => _busy;
   bool get authenticated => _currentUser != null;
   String get databasePath => _database.apiUrl;
-  bool get chatGptAiReady => _chatGptAuth.authenticated;
+  Future<Map<String, dynamic>> canvasConnection() =>
+      _database.canvasConnection();
+  Future<Map<String, dynamic>> connectCanvas(String baseUrl, String token) =>
+      _database.connectCanvas(baseUrl, token);
+  Future<void> disconnectCanvas() => _database.disconnectCanvas();
+  Future<Map<String, dynamic>> canvasCourses({String? cursor}) =>
+      _database.canvasCourses(cursor: cursor);
+  Future<Map<String, dynamic>> canvasAssignments(
+    String courseId, {
+    String? cursor,
+  }) => _database.canvasAssignments(courseId, cursor: cursor);
+  bool get chatGptAiReady =>
+      _chatGptAuth.authenticated &&
+      _codexModels.contains(_aiSettings.codexModel);
   bool get deepSeekReady => _aiSettings.ready;
-  bool get aiReady => chatGptAiReady || deepSeekReady;
+  bool get aiReady => _aiSettings.usesCodex ? chatGptAiReady : deepSeekReady;
   int get pendingAiWordCount =>
       _words.where((word) => word.needsAiEnrichment).length;
-  String get activeAiModel => chatGptAiReady ? 'chatgpt5.5' : _aiSettings.model;
+  String get activeAiModel =>
+      _aiSettings.usesCodex ? _aiSettings.codexModel : _aiSettings.model;
   String get activeAiProviderLabel =>
-      chatGptAiReady ? 'ChatGPT / Codex' : 'DeepSeek API';
+      _aiSettings.usesCodex ? 'ChatGPT / Codex' : 'DeepSeek API';
 
   @override
   void dispose() {
@@ -107,18 +124,17 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     try {
-      _aiSettings = await _database.aiSettings();
-    } catch (_) {
-      _aiSettings = AiConnectionSettings.empty;
-    }
-    try {
       _chatGptAuth = await _chatGptAuthService.read();
+      if (_chatGptAuth.authenticated) {
+        _codexModels = await _chatGptAuthService.listModels();
+      }
     } catch (error) {
       _chatGptAuth = ChatGptAuthState.unavailable('ChatGPT 登录状态读取失败：$error');
     }
     try {
       _currentUser = await _database.currentUser();
       if (_currentUser != null) {
+        await _loadAiSettings(_currentUser!.id);
         await _loadAutoSyncState(_currentUser!.id);
         await _reloadLearningData();
         _startConversationSyncTimer();
@@ -145,6 +161,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       ChatGptLoginChallenge? challenge;
+      final learningUserBeforeLogin = _currentUser;
+      var authorizationCompleted = false;
       try {
         final loginChallenge = await _chatGptAuthService.startLogin(
           deviceCode: deviceCode,
@@ -152,32 +170,70 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         challenge = loginChallenge;
         await presentChallenge(loginChallenge);
         final state = await _chatGptAuthService.completeLogin(loginChallenge);
+        authorizationCompleted = state.authenticated;
         _chatGptAuth = state;
         notifyListeners();
         if (!state.authenticated) {
           return state.message ?? 'ChatGPT 登录未完成。';
         }
 
-        final subject = state.accountId?.trim();
-        if (subject == null || subject.isEmpty) {
-          return 'ChatGPT 登录成功，但没有返回可用于绑定本地账号的账户标识。';
+        AppUser? user;
+        if (_chatGptAuthService.usesRemoteGateway) {
+          // The server binds the existing LearningOS account and returns its
+          // device session. Do not create/switch accounts from email metadata.
+          user = await _database.currentUser();
+          if (user == null) return 'ChatGPT 已授权，但后端没有返回有效的 LearningOS 会话。';
+          if (learningUserBeforeLogin != null &&
+              user.id != learningUserBeforeLogin.id) {
+            return '后端没有保留当前 LearningOS 账号，请升级到支持账号绑定的后端。';
+          }
+        } else if (learningUserBeforeLogin != null) {
+          user = learningUserBeforeLogin;
+        } else {
+          final subject = state.accountId?.trim();
+          if (subject == null || subject.isEmpty) {
+            return 'ChatGPT 登录成功，但没有返回可用于绑定本地账号的账户标识。';
+          }
+          final existing = await _database.userForExternalAccount(
+            provider: 'chatgpt',
+            subject: subject,
+          );
+          user =
+              existing ??
+              await _database.createExternalUser(
+                provider: 'chatgpt',
+                subject: subject,
+                email: state.email ?? '',
+                displayName:
+                    state.displayName ?? _displayNameFromEmail(state.email),
+              );
         }
-        final existing = await _database.userForExternalAccount(
-          provider: 'chatgpt',
-          subject: subject,
-        );
-        final user =
-            existing ??
-            await _database.createExternalUser(
-              provider: 'chatgpt',
-              subject: subject,
-              email: state.email ?? '',
-              displayName:
-                  state.displayName ?? _displayNameFromEmail(state.email),
-            );
         await _database.setCurrentUser(user.id);
         await _database.seedStarterData(user.id);
         _currentUser = user;
+        try {
+          _codexModels = await _chatGptAuthService.listModels();
+        } catch (_) {
+          _codexModels = const [];
+          return 'ChatGPT 连接已保存，但暂时无法读取模型列表，请刷新连接后再切换到 Codex。';
+        }
+        final previousSettings = await _database.aiSettings(user.id);
+        final selectedModel = AiConnectionSettings.selectCodexModel(
+          _codexModels,
+          requested: previousSettings.codexModel,
+        );
+        if (selectedModel == null) {
+          return 'ChatGPT 登录成功，但 Codex App Server 没有返回可用模型。请检查后端网络后刷新。';
+        }
+        await _database.saveAiSettings(
+          user.id,
+          previousSettings.copyWith(
+            codexModel: selectedModel,
+            // Connect credentials without changing the user's global choice.
+            apiKey: '',
+          ),
+        );
+        await _loadAiSettings(user.id);
         await _loadAutoSyncState(user.id);
         await _reloadLearningData();
         _startConversationSyncTimer();
@@ -185,16 +241,32 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         _startCodexRealtimeBridge(fullRefresh: true);
         return null;
       } catch (error) {
-        if (challenge != null) {
+        if (challenge != null &&
+            !authorizationCompleted &&
+            error is! ServerConnectionException) {
           try {
             await _chatGptAuthService.cancelLogin(challenge.loginId);
           } catch (_) {
             // Best effort cancellation; preserve the original error.
           }
         }
-        return 'ChatGPT 登录失败：$error';
+        return _friendlyChatGptLoginError(error);
       }
     });
+  }
+
+  static String _friendlyChatGptLoginError(Object error) {
+    final raw = error.toString();
+    if (raw.contains('AILO_CODEX_GATEWAY_ENABLED') ||
+        raw.contains('codex_gateway_disabled') ||
+        raw.contains('尚未启用 ChatGPT-Codex')) {
+      return '远程服务器尚未启用 ChatGPT-Codex。请先升级并配置 AILearningOS 后端，使用包内 start-server.ps1 启动服务，然后再登录。';
+    }
+    var detail = raw.trim();
+    while (RegExp(r'^(Bad state|StateError):\s*').hasMatch(detail)) {
+      detail = detail.replaceFirst(RegExp(r'^(Bad state|StateError):\s*'), '');
+    }
+    return 'ChatGPT 登录失败：$detail';
   }
 
   Future<String?> disconnectChatGpt() async {
@@ -206,6 +278,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           : const ChatGptAuthState.unavailable();
       _codexQuota = const ChatGptCodexQuotaState.unavailable();
       _codexHistory = const CodexHistorySyncState.idle();
+      _codexModels = const [];
       notifyListeners();
       return null;
     });
@@ -240,6 +313,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _loginSecurity = const LoginSecurityState.clear();
       await _database.setCurrentUser(user.id);
       _currentUser = user;
+      await _loadAiSettings(user.id);
       await _loadAutoSyncState(user.id);
       await _reloadLearningData();
       _startConversationSyncTimer();
@@ -273,6 +347,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _database.clearFailedLogins(user.email);
       await _database.seedStarterData(user.id);
       _currentUser = user;
+      await _loadAiSettings(user.id);
       await _loadAutoSyncState(user.id);
       await _reloadLearningData();
       _startConversationSyncTimer();
@@ -302,6 +377,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       await _database.clearFailedLogins(user.email);
       await _database.seedStarterData(user.id);
       _currentUser = user;
+      await _loadAiSettings(user.id);
       await _loadAutoSyncState(user.id);
       await _reloadLearningData();
       _startConversationSyncTimer();
@@ -323,6 +399,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _notes = const [];
     _captures = const [];
     _todayStats = const TodayStats.empty();
+    _aiSettings = AiConnectionSettings.empty;
     _conversationSyncState = ConversationSyncState.defaultState;
     _codexHistory = const CodexHistorySyncState.idle();
     _conversationSyncBackendAvailable = true;
@@ -358,8 +435,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
                 word.partOfSpeech == '待识别',
           )
           .toList(growable: false);
-      if ((chatGptAiReady || _aiSettings.hasClientApiKey) &&
-          aiTargets.isNotEmpty) {
+      final selectedSourceReady = _aiSettings.usesCodex
+          ? chatGptAiReady
+          : _aiSettings.hasClientApiKey;
+      final codexRunsOnServer = _aiSettings.usesCodex && usesRemoteCodexGateway;
+      if (selectedSourceReady && aiTargets.isNotEmpty && !codexRunsOnServer) {
         try {
           final report = await _aiService.enrichWords(
             settings: _aiSettings,
@@ -390,7 +470,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
           pendingCount: pendingAiWordCount,
           requestedCount: 0,
           enrichedCount: 0,
-          message: '已加入服务器后台队列；每 30 秒自动检查一次。',
+          message: _aiSettings.usesCodex
+              ? (usesRemoteCodexGateway
+                    ? '已加入服务器 Codex 队列；每 30 秒继续处理。'
+                    : '已加入 Codex 前台队列；Windows App 每 30 秒继续处理。')
+              : '已加入服务器后台队列；每 30 秒自动检查一次。',
           retryIntervalSeconds: 30,
         );
         notifyListeners();
@@ -416,10 +500,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     final user = _requireUser();
     _setBusy(true);
     try {
-      final analysis = await _aiService.analyzeConversation(
-        settings: _aiSettings,
-        transcript: transcript.trim(),
-      );
+      final analysis = await _analyzeConversation(transcript.trim());
       final inserted = analysis.words.isEmpty
           ? 0
           : await _database.insertWords(userId: user.id, words: analysis.words);
@@ -615,9 +696,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
 
-      final analysis = await _aiService.analyzeConversation(
-        settings: _aiSettings,
-        transcript: _transcriptForAi(candidate.transcript),
+      final analysis = await _analyzeConversation(
+        _transcriptForAi(candidate.transcript),
       );
       if (analysis.warning != null) throw StateError(analysis.warning!);
       final concepts = analysis.learnedConcepts.isEmpty
@@ -804,10 +884,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
 
-      final analysis = await _aiService.analyzeConversation(
-        settings: _aiSettings,
-        transcript: candidate.transcript,
-      );
+      final analysis = await _analyzeConversation(candidate.transcript);
       if (analysis.warning != null) throw StateError(analysis.warning!);
       final concepts = analysis.learnedConcepts.isEmpty
           ? ''
@@ -915,7 +992,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       pendingCount: pendingAiWordCount,
       requestedCount: 0,
       enrichedCount: 0,
-      message: '正在检查服务器后台补全进度…',
+      message: _aiSettings.usesCodex
+          ? '正在使用 Codex ${_aiSettings.codexModel} 检查待补全词条…'
+          : '正在检查服务器后台补全进度…',
       retryIntervalSeconds: 30,
       checkedAt: DateTime.now(),
     );
@@ -926,7 +1005,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       // actual worker, so this remains safe when Android is backgrounded.
       _words = await _database.wordsForUser(user.id);
       try {
-        _aiSettings = await _database.aiSettings();
+        _aiSettings = await _database.aiSettings(user.id);
       } catch (_) {
         // Keep the last visible connection state during a transient refresh.
       }
@@ -944,7 +1023,70 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         );
         return;
       }
-      _pendingWordEnrichmentState = await _database.enrichPendingWords(user.id);
+      if (_aiSettings.usesCodex) {
+        if (!chatGptAiReady) {
+          _pendingWordEnrichmentState = PendingWordEnrichmentState(
+            status: 'waiting_for_codex',
+            pendingCount: pendingAiWordCount,
+            requestedCount: 0,
+            enrichedCount: 0,
+            message: _chatGptAuth.authenticated
+                ? '当前 Codex 未提供 ${_aiSettings.codexModel}，请刷新模型或切换模型源。'
+                : '请在 Windows 前台登录 ChatGPT，Codex 才能继续处理队列。',
+            retryIntervalSeconds: 30,
+            checkedAt: DateTime.now(),
+          );
+          return;
+        }
+        if (usesRemoteCodexGateway) {
+          _pendingWordEnrichmentState = await _database.enrichPendingWords(
+            user.id,
+          );
+          return;
+        }
+        final targets = _words
+            .where((word) => word.needsAiEnrichment)
+            .take(20)
+            .map(
+              (word) => ParsedWord(
+                word: word.word,
+                phonetic: word.phonetic,
+                partOfSpeech: word.partOfSpeech,
+                translation: word.translation,
+                exampleEnglish: word.exampleEnglish,
+                exampleChinese: word.exampleChinese,
+              ),
+            )
+            .toList(growable: false);
+        final report = await _aiService.enrichWords(
+          settings: _aiSettings,
+          words: targets,
+        );
+        if (report.enrichedCount > 0) {
+          await _database.applyWordEnrichments(
+            userId: user.id,
+            words: report.words,
+          );
+          _words = await _database.wordsForUser(user.id);
+        }
+        _pendingWordEnrichmentState = PendingWordEnrichmentState(
+          status: pendingAiWordCount == 0 ? 'complete' : 'enriched',
+          pendingCount: pendingAiWordCount,
+          requestedCount: report.requestedCount,
+          enrichedCount: report.enrichedCount,
+          message:
+              report.warning ??
+              (pendingAiWordCount == 0
+                  ? '${_aiSettings.codexModel} 已完成全部待补全词条。'
+                  : '${_aiSettings.codexModel} 本轮已补全 ${report.enrichedCount} 个词条，30 秒后继续。'),
+          retryIntervalSeconds: 30,
+          checkedAt: DateTime.now(),
+        );
+      } else {
+        _pendingWordEnrichmentState = await _database.enrichPendingWords(
+          user.id,
+        );
+      }
       if (pendingAiWordCount == 0) {
         _pendingWordEnrichmentTimer?.cancel();
         _pendingWordEnrichmentTimer = null;
@@ -1003,7 +1145,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<String?> refreshCodexConnection() async {
-    if (!_chatGptAuth.authenticated) return '请先登录 ChatGPT。';
+    try {
+      _chatGptAuth = await _chatGptAuthService.read();
+      if (!_chatGptAuth.authenticated) return '请先登录 ChatGPT。';
+      _codexModels = await _chatGptAuthService.listModels();
+      if (_currentUser != null) await _loadAiSettings(_currentUser!.id);
+      notifyListeners();
+    } catch (_) {
+      return '暂时无法刷新 Codex 账号或模型列表，请稍后重试。';
+    }
     await _refreshCodexRealtimeBridge(fullRefresh: true, refreshQuota: true);
     return _codexHistory.lastError ?? _codexQuota.message;
   }
@@ -1050,6 +1200,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
               ),
           ],
         );
+        // A completed Codex conversation should enter the existing safe
+        // summarization pipeline immediately after ingestion. The pipeline
+        // still rejects an in-progress newest conversation and writes the
+        // resulting note idempotently to the server Obsidian vault.
+        unawaited(syncChatGptConversation(manual: true));
       }
       _codexHistory = CodexHistorySyncState(
         running: true,
@@ -1194,37 +1349,75 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     required bool enabled,
     required String apiKey,
     required String model,
+    required AiProvider provider,
+    String codexModel = AiConnectionSettings.defaultCodexModel,
   }) async {
     return _guard(() async {
+      if (provider == AiProvider.codex && !_chatGptAuth.authenticated) {
+        return '请先登录 ChatGPT，再切换到 Codex。';
+      }
+      final resolvedCodexModel = AiConnectionSettings.selectCodexModel(
+        _codexModels,
+        requested: codexModel,
+      );
+      if (provider == AiProvider.codex && resolvedCodexModel == null) {
+        return 'Codex App Server 没有返回可用模型，设置未切换。';
+      }
       final settings = AiConnectionSettings(
         enabled: enabled,
         apiKey: apiKey.trim(),
         model: model.trim().isEmpty
             ? AiConnectionSettings.defaultModel
             : model.trim(),
+        provider: provider,
+        codexModel:
+            resolvedCodexModel ??
+            AiConnectionSettings.migrateCodexModel(codexModel),
         apiKeyConfigured:
             apiKey.trim().isNotEmpty || _aiSettings.apiKeyConfigured,
         apiKeyHint: _aiSettings.apiKeyHint,
         serverEncryptionReady: _aiSettings.serverEncryptionReady,
       );
-      await _database.saveAiSettings(settings);
-      _aiSettings = await _database.aiSettings();
+      final user = _requireUser();
+      await _database.saveAiSettings(user.id, settings);
+      _aiSettings = await _database.aiSettings(user.id);
       notifyListeners();
-      if (_aiSettings.ready && pendingAiWordCount > 0) {
+      if (aiReady && pendingAiWordCount > 0) {
         unawaited(_runPendingWordEnrichment());
       }
       return null;
     });
   }
 
-  Future<String?> testAiConnection({AiConnectionSettings? settings}) async {
+  Future<String?> testAiConnection({
+    AiConnectionSettings? settings,
+    AiApiKeyTestSource keySource = AiApiKeyTestSource.stored,
+  }) async {
     final activeSettings = settings ?? _aiSettings;
-    if (!_chatGptAuth.authenticated && !activeSettings.ready) {
-      return '请先使用 ChatGPT 登录接入 Codex，或启用 DeepSeek API Key。';
+    if (activeSettings.usesCodex && !_chatGptAuth.authenticated) {
+      return '请先使用 ChatGPT 登录接入 Codex。';
+    }
+    if (activeSettings.usesCodex &&
+        !_codexModels.contains(activeSettings.codexModel)) {
+      return '当前 Codex 模型列表中没有 ${activeSettings.codexModel}，不能切换。';
+    }
+    if (activeSettings.usesDeepSeek && !activeSettings.ready) {
+      return '请先启用并配置 DeepSeek API Key。';
     }
     return _guard(() async {
-      if (activeSettings.ready) {
-        return _database.testAiConnection(activeSettings);
+      if (activeSettings.usesDeepSeek) {
+        return _database.testAiConnection(
+          _requireUser().id,
+          activeSettings,
+          keySource: keySource,
+        );
+      }
+      if (_chatGptAuthService.usesRemoteGateway) {
+        return _database.testAiConnection(
+          _requireUser().id,
+          activeSettings,
+          keySource: AiApiKeyTestSource.stored,
+        );
       }
       final probe = await _aiService.testConnection(activeSettings);
       return probe.ok ? null : probe.message;
@@ -1273,6 +1466,81 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _loadAiSettings(int userId) async {
+    try {
+      _aiSettings = await _database.aiSettings(userId);
+      if (_aiSettings.usesCodex && _codexModels.isNotEmpty) {
+        final selected = AiConnectionSettings.selectCodexModel(
+          _codexModels,
+          requested: _aiSettings.codexModel,
+        );
+        if (selected != null && selected != _aiSettings.codexModel) {
+          await _database.saveAiSettings(
+            userId,
+            _aiSettings.copyWith(apiKey: '', codexModel: selected),
+          );
+          _aiSettings = _aiSettings.copyWith(codexModel: selected);
+        }
+      }
+    } catch (_) {
+      _aiSettings = AiConnectionSettings.empty;
+    }
+  }
+
+  Future<AiConversationAnalysis> _analyzeConversation(String transcript) async {
+    if (_aiSettings.usesCodex && !_chatGptAuthService.usesRemoteGateway) {
+      return _aiService.analyzeConversation(
+        settings: _aiSettings,
+        transcript: transcript,
+      );
+    }
+    final map = await _database.analyzeConversation(
+      _requireUser().id,
+      transcript,
+    );
+    final rawWords = map['words'];
+    final words = <ParsedWord>[
+      if (rawWords is List)
+        for (final raw in rawWords)
+          if (raw is Map)
+            ParsedWord(
+              word: _mapString(raw, 'word'),
+              phonetic: _mapString(raw, 'phonetic', fallback: '待生成'),
+              partOfSpeech: _mapString(
+                raw,
+                'partOfSpeech',
+                alternateKey: 'part_of_speech',
+                fallback: '待识别',
+              ),
+              translation: _mapString(raw, 'translation', fallback: '待 AI 翻译'),
+              exampleEnglish: _mapString(
+                raw,
+                'exampleEnglish',
+                alternateKey: 'example_en',
+              ),
+              exampleChinese: _mapString(
+                raw,
+                'exampleChinese',
+                alternateKey: 'example_zh',
+              ),
+            ),
+    ].where((word) => word.word.isNotEmpty).toList(growable: false);
+    return AiConversationAnalysis(
+      title: _mapString(map, 'title', fallback: 'AI 对话学习记录'),
+      category: _mapString(map, 'category', fallback: 'Inbox'),
+      tags: _mapStringList(map['tags']),
+      summaryEnglish: _mapString(
+        map,
+        'summaryEnglish',
+        fallback: 'Conversation captured for later review.',
+      ),
+      summaryChinese: _mapString(map, 'summaryChinese', fallback: '已生成对话学习摘要。'),
+      learnedConcepts: _mapStringList(map['learnedConcepts']),
+      actionItems: _mapStringList(map['actionItems']),
+      words: words,
+    );
+  }
+
   Future<void> _reloadLearningData() async {
     final user = _requireUser();
     final values = await Future.wait<Object>([
@@ -1301,7 +1569,9 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         pendingCount: pendingAiWordCount,
         requestedCount: 0,
         enrichedCount: 0,
-        message: '已加入服务器后台队列；每 30 秒自动检查一次。',
+        message: _aiSettings.usesCodex
+            ? '已加入 Codex 前台队列；Windows App 每 30 秒继续处理。'
+            : '已加入服务器后台队列；每 30 秒自动检查一次。',
         retryIntervalSeconds: 30,
       );
     }
@@ -1333,6 +1603,26 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   static bool _isMissingServerRoute(Object error) =>
       error.toString().toLowerCase().contains('http 404');
+
+  static String _mapString(
+    Map<dynamic, dynamic> map,
+    String key, {
+    String? alternateKey,
+    String fallback = '',
+  }) {
+    final value =
+        (map[key] ?? (alternateKey == null ? null : map[alternateKey]))
+            ?.toString()
+            .trim();
+    return value == null || value.isEmpty ? fallback : value;
+  }
+
+  static List<String> _mapStringList(Object? value) => value is List
+      ? value
+            .map((item) => item.toString().trim())
+            .where((item) => item.isNotEmpty)
+            .toList(growable: false)
+      : const [];
 
   String _failedLoginMessage(LoginSecurityState state) {
     final remaining = state.remainingAt(DateTime.now());

@@ -6,16 +6,20 @@ import 'package:shelf_router/shelf_router.dart';
 import '../data/app_database.dart';
 import '../core/ai/hybrid_ai_service.dart';
 import '../core/ai/pending_word_enrichment.dart';
+import '../core/codex/server_codex_gateway.dart';
 import '../domain/models.dart';
 import '../domain/learning_engine.dart';
 import '../domain/word_parser.dart';
 import '../core/security/password_hasher.dart';
+import '../core/canvas/canvas_service.dart';
+import 'canvas_routes.dart';
 
 class ApiRouter {
   final AppDatabase db;
   final HybridAiService aiService;
   final PendingWordEnrichmentProcessor pendingWordProcessor;
   final PendingWordEnrichmentWorker? pendingWordWorker;
+  final ServerCodexGateway? codexGateway;
   final PasswordHasher _passwordHasher = PasswordHasher();
 
   ApiRouter(
@@ -23,10 +27,15 @@ class ApiRouter {
     this.aiService,
     this.pendingWordProcessor, {
     this.pendingWordWorker,
+    this.codexGateway,
   });
 
   Router get router {
     final router = Router();
+    router.mount(
+      '/api/integrations/canvas/',
+      CanvasRoutes(db, CanvasService()).handler,
+    );
 
     router.get('/health', (Request request) {
       return Response.ok('OK');
@@ -35,21 +44,34 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-09-01-word-pos-parser-v3.1',
+        'build': '2026-09-07-codex-login-recovery-v3.9',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
-        'ai': 'deepseek-chat-completions',
+        'ai': 'codex-account-model-list-or-deepseek-v4-flash',
+        'ai_provider_switch': 'persistent-strict-no-silent-fallback',
+        'ai_features': {
+          'word_enrichment': 'selected_provider',
+          'conversation_notes': 'selected_provider',
+          'email_summaries': 'selected_provider',
+          'feishu_summaries': 'selected_provider',
+          'course_daily_plan': 'selected_provider',
+          'ai_chat': 'selected_provider',
+        },
         'ai_key_storage': 'aes-256-gcm-server-vault',
-        'word_enrichment': 'server-owned-30-second-retry-queue',
+        'mobile_codex_login': 'https-device-code-gateway-per-account',
+        'codex_gateway_enabled': codexGateway?.enabled == true,
+        'codex_login_recovery': 'account-read-durable-binding-idempotent-v1',
+        'word_enrichment': 'provider-aware-30-second-retry-queue',
         'obsidian': 'server-data-vault-markdown',
         'feishu': 'recording-webhook-transcript',
+        'canvas': 'account-bound-readonly-courses-assignments-v1',
       });
     });
 
     // ---------- Users & Session ----------
 
     router.get('/api/users/current', (Request request) async {
-      final user = await db.currentUser();
+      final user = await _authenticatedUser(request);
       return _json({'user': user?.toMap()});
     });
 
@@ -111,8 +133,12 @@ class ApiRouter {
         );
       }
       await db.clearFailedLogins(email);
-      await db.setCurrentUser(credential.user.id);
-      return _json({'user': credential.user.toMap()});
+      final session = await db.createAuthSession(credential.user.id);
+      return _json({
+        'user': credential.user.toMap(),
+        'session_token': session.token,
+        'session_expires_at': session.expiresAt.toIso8601String(),
+      });
     });
 
     router.get('/api/users/external', (Request request) async {
@@ -137,7 +163,12 @@ class ApiRouter {
           passwordHash: payload['password_hash'] as String? ?? '',
           passwordSalt: payload['password_salt'] as String? ?? '',
         );
-        return _json({'user': user.toMap()});
+        final session = await db.createAuthSession(user.id);
+        return _json({
+          'user': user.toMap(),
+          'session_token': session.token,
+          'session_expires_at': session.expiresAt.toIso8601String(),
+        });
       } catch (e) {
         return Response.internalServerError(body: e.toString());
       }
@@ -152,25 +183,176 @@ class ApiRouter {
           email: (payload['email'] as String? ?? '').trim().toLowerCase(),
           displayName: (payload['display_name'] as String? ?? '').trim(),
         );
-        return _json({'user': user.toMap()});
+        final session = await db.createAuthSession(user.id);
+        return _json({
+          'user': user.toMap(),
+          'session_token': session.token,
+          'session_expires_at': session.expiresAt.toIso8601String(),
+        });
       } catch (e) {
         return Response.internalServerError(body: e.toString());
       }
     });
 
     router.post('/api/session/current', (Request request) async {
-      final payload = await _readJson(request);
-      final userId = (payload['user_id'] as num?)?.toInt();
-      if (userId == null) {
-        return Response.badRequest(body: 'user_id is required');
+      final user = await _authenticatedUser(request);
+      if (user == null) {
+        return _json({'error': '需要有效的设备登录会话。'}, statusCode: 401);
       }
-      await db.setCurrentUser(userId);
-      return _json({'ok': true});
+      return _json({'ok': true, 'user': user.toMap()});
     });
 
     router.post('/api/session/clear', (Request request) async {
-      await db.clearSession();
+      final token = _bearerToken(request);
+      if (token != null) await db.deleteAuthSession(token);
       return _json({'ok': true});
+    });
+
+    // ---------- ChatGPT / Codex mobile gateway ----------
+
+    // Device code avoids a callback listener on the phone. The one-time
+    // attempt secret only authorizes completion/cancellation of this login;
+    // it is not an OpenAI credential and expires with the device code.
+    router.post('/api/auth/chatgpt/device/start', (Request request) async {
+      final gateway = codexGateway;
+      if (gateway == null) {
+        return _json({'error': '此服务器尚未部署 Codex 网关。'}, statusCode: 503);
+      }
+      if (!gateway.enabled) {
+        return _json({
+          'error': '远程服务器尚未启用 ChatGPT-Codex。',
+          'code': 'codex_gateway_disabled',
+          'action':
+              '请在后端主机使用部署包中的 start-server.ps1 启动服务，或为 server.exe 设置 AILO_CODEX_GATEWAY_ENABLED=1 后重启。',
+        }, statusCode: 503);
+      }
+      try {
+        final owner = await _authenticatedUser(request);
+        if (_bearerToken(request) != null && owner == null) {
+          return _unauthorized();
+        }
+        return _json(await gateway.startDeviceLogin(owner: owner));
+      } catch (error) {
+        return _json({'error': '无法启动 ChatGPT 设备码登录：$error'}, statusCode: 503);
+      }
+    });
+
+    router.post('/api/auth/chatgpt/device/<attemptId>/complete', (
+      Request request,
+      String attemptId,
+    ) async {
+      final gateway = codexGateway;
+      if (gateway == null) {
+        return _json({'error': '此服务器尚未部署 Codex 网关。'}, statusCode: 503);
+      }
+      final payload = await _readJson(request);
+      try {
+        final result = await gateway.completeDeviceLogin(
+          attemptId: attemptId,
+          attemptSecret: payload['attempt_secret']?.toString() ?? '',
+          requester: await _authenticatedUser(request),
+        );
+        if (result == null) {
+          return _json({
+            'pending': true,
+            'retry_after_seconds': 2,
+          }, statusCode: 202);
+        }
+        return _json({
+          'pending': false,
+          'auth': result.auth,
+          'user': result.user.toMap(),
+          'session_token': result.session.token,
+          'session_expires_at': result.session.expiresAt.toIso8601String(),
+        });
+      } catch (error) {
+        return _json({'error': 'ChatGPT 登录未完成：$error'}, statusCode: 400);
+      }
+    });
+
+    router.delete('/api/auth/chatgpt/device/<attemptId>', (
+      Request request,
+      String attemptId,
+    ) async {
+      final gateway = codexGateway;
+      if (gateway == null) return Response(204);
+      final payload = await _readJson(request);
+      try {
+        await gateway.cancelDeviceLogin(
+          attemptId: attemptId,
+          attemptSecret: payload['attempt_secret']?.toString() ?? '',
+          requester: await _authenticatedUser(request),
+        );
+        return Response(204);
+      } catch (_) {
+        // An expired/cancelled login must be idempotent to keep the UI simple.
+        return Response(204);
+      }
+    });
+
+    router.get('/api/codex/account', (Request request) async {
+      final user = await _requireAuthenticatedUser(request);
+      if (user == null) return _unauthorized();
+      final gateway = codexGateway;
+      if (gateway == null) {
+        return _json({'error': '此服务器尚未部署 Codex 网关。'}, statusCode: 503);
+      }
+      return _json(await gateway.readAccount(user));
+    });
+
+    router.get('/api/codex/models', (Request request) async {
+      final user = await _requireAuthenticatedUser(request);
+      if (user == null) return _unauthorized();
+      final gateway = codexGateway;
+      if (gateway == null) {
+        return _json({'error': '此服务器尚未部署 Codex 网关。'}, statusCode: 503);
+      }
+      try {
+        return _json({'models': await gateway.listModels(user)});
+      } catch (error) {
+        return _aiFailureResponse(error, provider: AiProvider.codex);
+      }
+    });
+
+    router.get('/api/codex/quota', (Request request) async {
+      final user = await _requireAuthenticatedUser(request);
+      if (user == null) return _unauthorized();
+      final gateway = codexGateway;
+      if (gateway == null) {
+        return _json({'error': '此服务器尚未部署 Codex 网关。'}, statusCode: 503);
+      }
+      try {
+        return _json(await gateway.readQuota(user));
+      } catch (error) {
+        return _json({'error': 'Codex 额度读取失败：$error'}, statusCode: 503);
+      }
+    });
+
+    router.get('/api/codex/history', (Request request) async {
+      final user = await _requireAuthenticatedUser(request);
+      if (user == null) return _unauthorized();
+      final gateway = codexGateway;
+      if (gateway == null) {
+        return _json({'error': '此服务器尚未部署 Codex 网关。'}, statusCode: 503);
+      }
+      try {
+        return _json(
+          await gateway.readHistory(
+            user,
+            fullRefresh: request.url.queryParameters['full_refresh'] == '1',
+          ),
+        );
+      } catch (error) {
+        return _json({'error': 'Codex OSS 聊天记录读取失败：$error'}, statusCode: 503);
+      }
+    });
+
+    router.delete('/api/codex/session', (Request request) async {
+      final user = await _requireAuthenticatedUser(request);
+      if (user == null) return _unauthorized();
+      final gateway = codexGateway;
+      if (gateway != null) await gateway.logout(user);
+      return Response(204);
     });
 
     router.post('/api/users/<userId>/seed', (
@@ -209,34 +391,50 @@ class ApiRouter {
 
     // ---------- AI Settings ----------
 
-    router.get('/api/settings/ai', (Request request) async {
-      final configured = await db.aiApiKeyConfigured();
+    router.get('/api/users/<userId>/settings/ai', (
+      Request request,
+      String userId,
+    ) async {
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
+      final configured = await db.aiApiKeyConfigured(id);
+      final settings = await db.aiSettings(id);
       return _json({
-        'enabled': configured ? (await db.aiSettings()).enabled : false,
+        'enabled': settings.enabled,
         // Provider credentials are decrypted only inside server-side AI jobs
-        // and are never returned to Android, Windows, logs, or OpenClaw.
+        // and are never returned to Android, Windows, logs, or external tools.
         'api_key_configured': configured,
-        'api_key_hint': await db.aiApiKeyHint(),
+        'api_key_hint': await db.aiApiKeyHint(id),
         'encryption_ready': db.secretVaultReady,
         'encryption': 'AES-256-GCM',
-        'model': configured
-            ? (await db.aiSettings()).model
-            : AiConnectionSettings.defaultModel,
+        'model': settings.model,
+        'provider': settings.provider.apiValue,
+        'codex_model': settings.codexModel,
       });
     });
 
-    router.post('/api/settings/ai', (Request request) async {
+    router.post('/api/users/<userId>/settings/ai', (
+      Request request,
+      String userId,
+    ) async {
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
       final payload = await _readJson(request);
       try {
         await db.saveAiSettings(
+          id,
           AiConnectionSettings(
             enabled: payload['enabled'] == true,
             apiKey: (payload['api_key'] as String? ?? '').trim(),
             model: (payload['model'] as String? ?? '').trim(),
+            provider: AiProvider.fromApiValue(payload['provider']),
+            codexModel: (payload['codex_model'] as String? ?? '').trim(),
           ),
           clearApiKey: payload['clear_api_key'] == true,
         );
-        final configured = await db.aiApiKeyConfigured();
+        final configured = await db.aiApiKeyConfigured(id);
         if (configured && payload['enabled'] == true) {
           unawaited(pendingWordProcessor.runAll());
         }
@@ -253,24 +451,111 @@ class ApiRouter {
       }
     });
 
-    router.post('/api/settings/ai/test', (Request request) async {
+    router.post('/api/users/<userId>/settings/ai/test', (
+      Request request,
+      String userId,
+    ) async {
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
       final payload = await _readJson(request);
       final candidate = (payload['api_key'] as String? ?? '').trim();
+      final keySource = payload['key_source']?.toString() == 'candidate'
+          ? 'candidate'
+          : 'stored';
       try {
-        final stored = await db.aiSettings();
+        final stored = await db.aiSettings(id);
+        final requestedProvider = AiProvider.fromApiValue(payload['provider']);
+        if (requestedProvider == AiProvider.codex) {
+          final user = await _authenticatedUser(request);
+          final gateway = codexGateway;
+          if (user == null || gateway == null) {
+            return _json({'ok': false, 'message': '服务器没有可用的 Codex 网关。'});
+          }
+          final probe = await gateway.testAiConnection(
+            user,
+            AiConnectionSettings(
+              enabled: true,
+              apiKey: '',
+              model: stored.model,
+              provider: AiProvider.codex,
+              codexModel:
+                  (payload['codex_model'] as String? ?? '').trim().isEmpty
+                  ? stored.codexModel
+                  : (payload['codex_model'] as String).trim(),
+            ),
+          );
+          return _json({
+            'ok': probe.ok,
+            'message': probe.message,
+            'tested_source': 'chatgpt_subscription',
+            'stored_key_changed': false,
+          });
+        }
+        if (keySource == 'candidate' && candidate.isEmpty) {
+          return _json({'ok': false, 'message': '请先填写新的 API Key。'});
+        }
+        if (keySource == 'stored' && stored.apiKey.trim().isEmpty) {
+          return _json({'ok': false, 'message': '当前账号没有已保存的 API Key。'});
+        }
         final settings = AiConnectionSettings(
           enabled: payload['enabled'] is bool
               ? payload['enabled'] == true
               : stored.enabled,
-          apiKey: candidate.isEmpty ? stored.apiKey : candidate,
+          apiKey: keySource == 'candidate' ? candidate : stored.apiKey,
           model: (payload['model'] as String? ?? '').trim().isEmpty
               ? stored.model
               : (payload['model'] as String).trim(),
+          provider: AiProvider.deepSeek,
+          codexModel: (payload['codex_model'] as String? ?? '').trim().isEmpty
+              ? stored.codexModel
+              : (payload['codex_model'] as String).trim(),
         );
         final probe = await aiService.testConnection(settings);
-        return _json({'ok': probe.ok, 'message': probe.message});
+        return _json({
+          'ok': probe.ok,
+          'message': probe.message,
+          'tested_source': keySource,
+          'stored_key_changed': false,
+        });
       } catch (error) {
         return _json({'ok': false, 'message': 'DeepSeek 连接失败：$error'});
+      }
+    });
+
+    router.post('/api/users/<userId>/ai/analyze-conversation', (
+      Request request,
+      String userId,
+    ) async {
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
+      final payload = await _readJson(request);
+      final transcript = (payload['transcript'] as String? ?? '').trim();
+      if (transcript.isEmpty) {
+        return _json({'error': '对话内容不能为空。'}, statusCode: 400);
+      }
+      var provider = AiProvider.deepSeek;
+      try {
+        final settings = await db.aiSettings(id);
+        provider = settings.provider;
+        final raw = await _completeTextForUser(
+          userId: id,
+          settings: settings,
+          prompt:
+              '''Analyze the following conversation as bilingual learning evidence.
+Return JSON only with keys: title, category, tags, summaryEnglish, summaryChinese, learnedConcepts, actionItems, words.
+Use concise English and Chinese. category should be one of Learning, Work, Personal, Inbox. tags should be 1-5 lowercase strings.
+Only include useful English words actually present in the transcript. Each word must include word, phonetic, partOfSpeech, translation, exampleEnglish, exampleChinese.
+Exclude secrets and personal identifiers.
+Transcript:
+$transcript''',
+        );
+        final decoded = jsonDecode(raw);
+        if (decoded is! Map) throw const FormatException('AI 返回内容不是对象。');
+        return _json(Map<String, dynamic>.from(decoded));
+      } catch (error) {
+        return _aiFailureResponse(error, provider: provider);
       }
     });
 
@@ -342,6 +627,31 @@ class ApiRouter {
       return _json(result.toMap());
     });
 
+    router.post('/api/words/<userId>/apply-enrichment', (
+      Request request,
+      String userId,
+    ) async {
+      final payload = await _readJson(request);
+      final rawWords = (payload['words'] as List<dynamic>?) ?? const [];
+      final words = <ParsedWord>[
+        for (final raw in rawWords)
+          if (raw is Map<String, dynamic>)
+            ParsedWord(
+              word: (raw['word'] as String? ?? '').trim(),
+              phonetic: (raw['phonetic'] as String? ?? '').trim(),
+              partOfSpeech: (raw['part_of_speech'] as String? ?? '').trim(),
+              translation: (raw['translation'] as String? ?? '').trim(),
+              exampleEnglish: (raw['example_en'] as String? ?? '').trim(),
+              exampleChinese: (raw['example_zh'] as String? ?? '').trim(),
+            ),
+      ].where((word) => word.word.isNotEmpty).toList(growable: false);
+      final updated = await db.updateWordEnrichments(
+        userId: int.parse(userId),
+        words: words,
+      );
+      return _json({'ok': true, 'updated': updated});
+    });
+
     router.post('/api/words/<userId>/review', (
       Request request,
       String userId,
@@ -406,7 +716,7 @@ class ApiRouter {
       );
       final notes = await db.notesForUser(id);
       final words = await db.wordsForUser(id);
-      final settings = await db.aiSettings();
+      final settings = await db.aiSettings(id);
       final context = jsonEncode({
         'learner_baseline': {
           'statistics': 'AP Statistics beginner',
@@ -443,9 +753,10 @@ class ApiRouter {
         ],
       });
 
-      if (settings.ready) {
+      if (settings.usesCodex || settings.ready) {
         try {
-          final raw = await aiService.completeText(
+          final raw = await _completeTextForUser(
+            userId: id,
             settings: settings,
             prompt: _dailyPlanPrompt(context),
           );
@@ -672,9 +983,12 @@ class ApiRouter {
         return Response.badRequest(body: 'transcript is too long');
       }
 
-      final settings = await db.aiSettings();
-      if (!settings.ready) {
-        return Response(503, body: 'DeepSeek is not configured on the server');
+      final settings = await db.aiSettings(int.parse(userId));
+      if (!settings.usesCodex && !settings.ready) {
+        return Response(
+          503,
+          body: 'AI provider is not configured on the server',
+        );
       }
       final title = _firstNonEmpty([
         payload['title'],
@@ -683,6 +997,7 @@ class ApiRouter {
       ]);
       try {
         final summary = await _summarizeFeishuRecording(
+          userId: int.parse(userId),
           settings: settings,
           title: title,
           transcript: transcript,
@@ -962,18 +1277,28 @@ class ApiRouter {
 
     // ---------- AI Proxy ----------
 
-    router.post('/api/ai/chat', (Request request) async {
+    router.post('/api/users/<userId>/ai/chat', (
+      Request request,
+      String userId,
+    ) async {
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
       final payload = await _readJson(request);
       final prompt = payload['prompt'] as String? ?? '';
 
+      var provider = AiProvider.deepSeek;
       try {
-        final result = await aiService.completeText(
-          settings: await db.aiSettings(),
+        final settings = await db.aiSettings(id);
+        provider = settings.provider;
+        final result = await _completeTextForUser(
+          userId: id,
+          settings: settings,
           prompt: prompt,
         );
         return _json({'result': result});
-      } catch (e) {
-        return Response.internalServerError(body: e.toString());
+      } catch (error) {
+        return _aiFailureResponse(error, provider: provider);
       }
     });
 
@@ -987,6 +1312,112 @@ class ApiRouter {
       headers: {'Content-Type': 'application/json; charset=utf-8'},
     );
   }
+
+  Response _aiFailureResponse(Object error, {required AiProvider provider}) {
+    final source = provider == AiProvider.codex ? 'Codex' : 'DeepSeek';
+    final detail = error
+        .toString()
+        .replaceFirst(RegExp(r'^(Bad state|StateError):\s*'), '')
+        .replaceFirst(RegExp(r'^FormatException:\s*'), '')
+        .trim();
+    final lower = detail.toLowerCase();
+
+    var statusCode = 502;
+    var code = 'ai_upstream_error';
+    var message = '$source 上游服务调用失败。';
+    var action = '请稍后重试；若持续失败，请检查后端日志。';
+
+    if (lower.contains('login') ||
+        lower.contains('登录') ||
+        lower.contains('authenticated') ||
+        lower.contains('unauthorized') ||
+        lower.contains('token expired')) {
+      statusCode = 401;
+      code = provider == AiProvider.codex
+          ? 'codex_auth_required'
+          : 'deepseek_key_rejected';
+      message = provider == AiProvider.codex
+          ? 'Codex 登录已失效或尚未完成。'
+          : 'DeepSeek API Key 未通过验证。';
+      action = provider == AiProvider.codex
+          ? '请在手机重新完成 ChatGPT 设备码登录。'
+          : '请在设置中选择旧 Key 或新填写 Key重新测试。';
+    } else if (lower.contains('quota') ||
+        lower.contains('rate limit') ||
+        lower.contains('usage limit') ||
+        lower.contains('额度') ||
+        lower.contains('429')) {
+      statusCode = 429;
+      code = '${provider.apiValue}_quota_exhausted';
+      message = '$source 当前额度或速率窗口已用尽。';
+      action = '请等待额度窗口重置后再试。';
+    } else if (lower.contains('model') || lower.contains('模型')) {
+      statusCode = 409;
+      code = '${provider.apiValue}_model_unavailable';
+      message = '$source 当前模型不可用。';
+      action = provider == AiProvider.codex
+          ? '后端会刷新 model/list；仍失败时请重新登录。'
+          : '请确认服务端配置的模型名称。';
+    } else if (lower.contains('socket') ||
+        lower.contains('connection') ||
+        lower.contains('network') ||
+        lower.contains('handshake') ||
+        lower.contains('timed out') ||
+        lower.contains('timeout')) {
+      statusCode = 503;
+      code = '${provider.apiValue}_network_error';
+      message = '$source 网络连接失败。';
+      action = '请检查实际后端服务器到 OpenAI/DeepSeek 的代理、VPN、DNS 和防火墙。';
+    } else if (lower.contains('json') ||
+        lower.contains('format') ||
+        lower.contains('不是对象')) {
+      code = '${provider.apiValue}_invalid_response';
+      message = '$source 返回内容格式不正确。';
+      action = '请重试；若持续出现，请查看后端日志中的上游响应。';
+    }
+
+    return _json({
+      'error': message,
+      'code': code,
+      'provider': provider.apiValue,
+      'action': action,
+    }, statusCode: statusCode);
+  }
+
+  String? _bearerToken(Request request) {
+    final header = request.headers['authorization']?.trim() ?? '';
+    if (!header.toLowerCase().startsWith('bearer ')) return null;
+    final token = header.substring(7).trim();
+    return token.isEmpty ? null : token;
+  }
+
+  Future<AppUser?> _authenticatedUser(Request request) async {
+    final token = _bearerToken(request);
+    if (token != null) return db.userForSessionToken(token);
+    // Migration escape hatch only. Production deployments leave this unset,
+    // so a request can never select the server-wide legacy app_session.
+    if (Platform.environment['AILO_ALLOW_LEGACY_SESSION']?.trim() == '1') {
+      return db.currentUser();
+    }
+    return null;
+  }
+
+  Future<AppUser?> _requireAuthenticatedUser(Request request) =>
+      _authenticatedUser(request);
+
+  Future<Response?> _requireAuthenticatedUserForId(
+    Request request,
+    int userId,
+  ) async {
+    final current = await _authenticatedUser(request);
+    if (current == null) return _unauthorized();
+    if (current.id != userId) {
+      return _json({'error': '不能访问其他账号的 AI 凭据。'}, statusCode: 403);
+    }
+    return null;
+  }
+
+  Response _unauthorized() => _json({'error': '需要有效的设备登录会话。'}, statusCode: 401);
 
   Future<Map<String, dynamic>> _readJson(Request request) async {
     final text = await request.readAsString();
@@ -1124,11 +1555,13 @@ $context''';
   }
 
   Future<Map<String, dynamic>> _summarizeFeishuRecording({
+    required int userId,
     required AiConnectionSettings settings,
     required String title,
     required String transcript,
   }) async {
-    final raw = await aiService.completeText(
+    final raw = await _completeTextForUser(
+      userId: userId,
       settings: settings,
       prompt:
           '''Summarize this Feishu recording for a Chinese learner's personal knowledge base.
@@ -1148,6 +1581,23 @@ $transcript''',
       throw const FormatException('Feishu summary JSON is invalid');
     }
     return Map<String, dynamic>.from(decoded);
+  }
+
+  Future<String> _completeTextForUser({
+    required int userId,
+    required AiConnectionSettings settings,
+    required String prompt,
+  }) async {
+    if (!settings.usesCodex) {
+      return aiService.completeText(settings: settings, prompt: prompt);
+    }
+    final gateway = codexGateway;
+    if (gateway == null || !gateway.enabled) {
+      throw StateError('服务器 Codex 网关尚未启用。');
+    }
+    final user = await db.userForId(userId);
+    if (user == null) throw StateError('用户不存在。');
+    return gateway.completeText(user, settings: settings, prompt: prompt);
   }
 
   String _stringOr(Object? value, String fallback) {

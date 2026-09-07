@@ -1,3 +1,4 @@
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:shelf/shelf.dart';
@@ -8,6 +9,7 @@ import 'package:server/api/router.dart';
 import 'package:server/data/app_database.dart';
 import 'package:server/core/ai/hybrid_ai_service.dart';
 import 'package:server/core/ai/pending_word_enrichment.dart';
+import 'package:server/core/codex/server_codex_gateway.dart';
 import 'package:server/core/security/secret_vault.dart';
 
 void main(List<String> args) async {
@@ -15,6 +17,8 @@ void main(List<String> args) async {
     print(SecretVault.generateMasterKey());
     return;
   }
+
+  _loadBundledSqlite();
 
   // Initialize Database
   final configuredDataDirectory =
@@ -31,9 +35,26 @@ void main(List<String> args) async {
 
   // Initialize AI Services
   final aiService = HybridAiService();
-  final pendingWordProcessor = PendingWordEnrichmentProcessor(db, aiService);
+  final configuredCodexExecutable =
+      Platform.environment['AILO_CODEX_EXECUTABLE']?.trim() ?? '';
+  final codexGateway = ServerCodexGateway(
+    db,
+    executable: configuredCodexExecutable.isEmpty
+        ? 'codex'
+        : configuredCodexExecutable,
+  );
+  final codexHistoryWorker = CodexHistorySyncWorker(codexGateway);
+  codexHistoryWorker.start();
+  final pendingWordProcessor = PendingWordEnrichmentProcessor(
+    db,
+    aiService,
+    codexGateway: codexGateway,
+  );
   final pendingWordWorker = PendingWordEnrichmentWorker(pendingWordProcessor);
   pendingWordWorker.start();
+  print(
+    'Codex mobile gateway: ${codexGateway.enabled ? 'enabled' : 'disabled (set AILO_CODEX_GATEWAY_ENABLED=1)'}',
+  );
 
   // Setup Router
   final api = ApiRouter(
@@ -41,6 +62,7 @@ void main(List<String> args) async {
     aiService,
     pendingWordProcessor,
     pendingWordWorker: pendingWordWorker,
+    codexGateway: codexGateway,
   );
 
   // Setup Pipeline
@@ -55,4 +77,29 @@ void main(List<String> args) async {
 
   final server = await serve(handler, ip, port);
   print('Server listening on port ${server.port}');
+}
+
+/// AOT executables do not participate in Dart's native-assets build step at
+/// runtime. Load the packaged SQLite DLL before sqflite initializes so the FFI
+/// resolver can find its symbols in the current process.
+void _loadBundledSqlite() {
+  if (!Platform.isWindows) return;
+  final executableDirectory = File(Platform.resolvedExecutable).parent;
+  final configured = Platform.environment['AILO_SQLITE3_LIBRARY']?.trim();
+  final candidates = <File>[
+    if (configured != null && configured.isNotEmpty) File(configured),
+    File('${executableDirectory.path}${Platform.pathSeparator}sqlite3.dll'),
+    File(
+      '${executableDirectory.parent.path}${Platform.pathSeparator}'
+      'lib${Platform.pathSeparator}sqlite3.dll',
+    ),
+  ];
+  for (final candidate in candidates) {
+    if (!candidate.existsSync()) continue;
+    final library = DynamicLibrary.open(candidate.absolute.path);
+    if (!library.providesSymbol('sqlite3_initialize')) {
+      throw StateError('${candidate.absolute.path} 不是有效的 SQLite 运行库。');
+    }
+    return;
+  }
 }

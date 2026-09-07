@@ -69,11 +69,21 @@ void main() {
         dataDirectory: dataDirectory,
         secretVault: vault,
       );
+      final user = await database.createUser(
+        email: 'vault-owner@test.local',
+        displayName: 'Vault Owner',
+        passwordHash: '',
+        passwordSalt: '',
+      );
+      await database.setCurrentUser(user.id);
       await database.saveAiSettings(
+        user.id,
         const AiConnectionSettings(
           enabled: true,
           apiKey: 'test-provider-key-never-store-this-plaintext',
           model: AiConnectionSettings.defaultModel,
+          provider: AiProvider.codex,
+          codexModel: AiConnectionSettings.defaultCodexModel,
         ),
       );
       final databasePath = database.filePath;
@@ -81,13 +91,11 @@ void main() {
 
       sqfliteFfiInit();
       final rawDatabase = await databaseFactoryFfi.openDatabase(databasePath);
-      final rows = await rawDatabase.query('app_settings');
+      final rows = await rawDatabase.query('user_ai_settings');
       await rawDatabase.close();
-      final values = <String, String>{
-        for (final row in rows) row['key']! as String: row['value']! as String,
-      };
-
-      expect(values, isNot(contains('deepseek_api_key')));
+      expect(rows, hasLength(1));
+      final values = rows.single;
+      expect(values['user_id'], user.id);
       expect(
         values['deepseek_api_key_encrypted_v1'],
         allOf(startsWith('v1.'), isNot(contains('test-provider-key-never'))),
@@ -97,10 +105,13 @@ void main() {
         dataDirectory: dataDirectory,
         secretVault: vault,
       );
+      final reopenedSettings = await reopened.aiSettings(user.id);
       expect(
-        (await reopened.aiSettings()).apiKey,
+        reopenedSettings.apiKey,
         'test-provider-key-never-store-this-plaintext',
       );
+      expect(reopenedSettings.provider, AiProvider.codex);
+      expect(reopenedSettings.codexModel, 'gpt-5.6-terra');
       await reopened.close();
     });
 
@@ -109,6 +120,13 @@ void main() {
         dataDirectory: dataDirectory,
         secretVault: SecretVault.fromEnvironment(const {}),
       );
+      final user = await emptyDatabase.createUser(
+        email: 'legacy-owner@test.local',
+        displayName: 'Legacy Owner',
+        passwordHash: '',
+        passwordSalt: '',
+      );
+      await emptyDatabase.setCurrentUser(user.id);
       final databasePath = emptyDatabase.filePath;
       await emptyDatabase.close();
 
@@ -126,17 +144,24 @@ void main() {
         secretVault: vault,
       );
       expect(
-        (await migrated.aiSettings()).apiKey,
+        (await migrated.aiSettings(user.id)).apiKey,
         'test-provider-key-legacy-plaintext',
       );
       await migrated.close();
 
       final inspection = await databaseFactoryFfi.openDatabase(databasePath);
       final rows = await inspection.query('app_settings');
+      final userRows = await inspection.query('user_ai_settings');
       await inspection.close();
       final keys = rows.map((row) => row['key']).toSet();
       expect(keys, isNot(contains('deepseek_api_key')));
-      expect(keys, contains('deepseek_api_key_encrypted_v1'));
+      expect(keys, isNot(contains('deepseek_api_key_encrypted_v1')));
+      expect(userRows, hasLength(1));
+      expect(userRows.single['user_id'], user.id);
+      expect(
+        userRows.single['deepseek_api_key_encrypted_v1'],
+        startsWith('v1.'),
+      );
     });
   });
 }

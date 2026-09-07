@@ -169,6 +169,10 @@ abstract class ChatGptAuthService {
 
   bool get supported;
 
+  /// True only when Codex work must be performed by the application's trusted
+  /// HTTPS gateway instead of a local Codex process.
+  bool get usesRemoteGateway => false;
+
   Future<ChatGptAuthState> read();
 
   Future<ChatGptLoginChallenge> startLogin({bool deviceCode = false});
@@ -180,6 +184,9 @@ abstract class ChatGptAuthService {
   Future<void> logout();
 
   Future<ChatGptCodexQuotaState> readQuota();
+
+  /// Returns the exact model ids advertised by the active Codex App Server.
+  Future<List<String>> listModels();
 
   Future<CodexHistoryBatch> readCodexHistory({bool fullRefresh = false});
 
@@ -218,6 +225,9 @@ class NoopChatGptAuthService extends ChatGptAuthService {
   @override
   Future<ChatGptCodexQuotaState> readQuota() async =>
       const ChatGptCodexQuotaState.unavailable('当前平台不支持 Codex 额度读取。');
+
+  @override
+  Future<List<String>> listModels() async => const [];
 
   @override
   Future<CodexHistoryBatch> readCodexHistory({bool fullRefresh = false}) {

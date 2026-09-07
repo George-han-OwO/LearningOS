@@ -14,39 +14,26 @@ class HybridAiService implements AiService {
   final DeepSeekService deepSeekService;
 
   @override
-  Future<AiConnectionProbe> testConnection(
-    AiConnectionSettings settings,
-  ) async {
-    final codexProbe = await codexService.testConnection(settings);
-    if (codexProbe.ok) return codexProbe;
-    if (settings.ready) {
-      return deepSeekService.testConnection(settings);
-    }
-    return codexProbe;
-  }
+  Future<AiConnectionProbe> testConnection(AiConnectionSettings settings) =>
+      settings.usesCodex
+      ? codexService.testConnection(settings)
+      : deepSeekService.testConnection(settings);
 
   @override
   Future<AiEnrichmentReport> enrichWords({
     required AiConnectionSettings settings,
     required List<ParsedWord> words,
-  }) async {
-    final codexProbe = await codexService.testConnection(settings);
-    if (codexProbe.ok) {
-      final report = await codexService.enrichWords(
-        settings: settings,
-        words: words,
-      );
-      if (report.enrichedCount > 0 || report.warning == null) {
-        return report;
-      }
-    }
-    return deepSeekService.enrichWords(settings: settings, words: words);
-  }
+  }) => settings.usesCodex
+      ? codexService.enrichWords(settings: settings, words: words)
+      : deepSeekService.enrichWords(settings: settings, words: words);
 
   Future<String> completeText({
     required AiConnectionSettings settings,
     required String prompt,
   }) {
+    if (settings.usesCodex) {
+      throw StateError('Codex 需要由已登录的 App Server 网关执行。');
+    }
     return deepSeekService.completeText(settings: settings, prompt: prompt);
   }
 }

@@ -6,6 +6,7 @@ import '../../design/app_theme.dart';
 import '../../design/app_widgets.dart';
 import '../../domain/models.dart';
 import '../auth/chatgpt_login_dialog.dart';
+import '../canvas/canvas_page.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({required this.onOpenSafety, super.key});
@@ -116,7 +117,7 @@ class ProfilePage extends StatelessWidget {
                     subtitle: controller.chatGptAuth.authenticated
                         ? _codexConnectionSubtitle(controller)
                         : controller.chatGptAuth.available
-                        ? '未登录 · 通过官方浏览器流程连接 chatgpt5.5'
+                        ? '未登录 · 通过官方浏览器流程连接 Codex'
                         : '当前设备不可用 · Windows 需安装 Codex，Android 需受信任网关',
                     tint: controller.chatGptAuth.authenticated
                         ? AppPalette.green
@@ -141,24 +142,26 @@ class ProfilePage extends StatelessWidget {
                   ),
                   AppGroupRow(
                     icon: CupertinoIcons.sparkles,
-                    title: 'DeepSeek API',
-                    subtitle: controller.deepSeekReady
-                        ? '服务器已加密保存 · ${controller.aiSettings.model} · 后台自动补全'
-                        : controller.aiSettings.serverEncryptionReady
-                        ? '未连接 · 填写 DeepSeek API Key 后自动处理队列'
-                        : '服务器密钥保险库尚未配置',
-                    tint: controller.deepSeekReady
+                    title: 'AI 模型源',
+                    subtitle: controller.aiSettings.usesCodex
+                        ? controller.chatGptAiReady
+                              ? '已选择 Codex · ${controller.aiSettings.codexModel} · 使用 ChatGPT 额度'
+                              : '已选择 Codex · 当前模型不可用'
+                        : controller.deepSeekReady
+                        ? '已选择 DeepSeek · ${controller.aiSettings.model} · 服务器后台运行'
+                        : '已选择 DeepSeek · API Key 尚未启用',
+                    tint: controller.aiReady
                         ? AppPalette.green
                         : AppPalette.blue,
-                    tintBackground: controller.deepSeekReady
+                    tintBackground: controller.aiReady
                         ? AppPalette.greenSoft
                         : AppPalette.softSurface,
                     trailing: _StatusPill(
-                      label: controller.deepSeekReady ? '已开启' : '备用',
-                      color: controller.deepSeekReady
+                      label: controller.aiReady ? '可用' : '待配置',
+                      color: controller.aiReady
                           ? AppPalette.green
                           : AppPalette.blue,
-                      background: controller.deepSeekReady
+                      background: controller.aiReady
                           ? AppPalette.greenSoft
                           : AppPalette.blueSoft,
                     ),
@@ -217,6 +220,16 @@ class ProfilePage extends StatelessWidget {
                   ),
                   _emailSyncRow(context, controller, EmailProvider.outlook),
                   _emailSyncRow(context, controller, EmailProvider.qq),
+                  AppGroupRow(
+                    icon: CupertinoIcons.book,
+                    title: 'Canvas 课程',
+                    subtitle: '连接学校账号 · 课程、作业与截止时间',
+                    onTap: () => Navigator.of(context).push(
+                      CupertinoPageRoute<void>(
+                        builder: (_) => CanvasPage(controller: controller),
+                      ),
+                    ),
+                  ),
                   AppGroupRow(
                     icon: CupertinoIcons.shield_fill,
                     title: '安全防炸',
@@ -472,7 +485,7 @@ class ProfilePage extends StatelessWidget {
                       const SizedBox(height: 12),
                       Text(
                         controller.chatGptAuth.authenticated
-                            ? '已接入 ChatGPT 订阅对应的 Codex 额度，并通过官方 App Server 增量读取本机 OSS 工作区会话。应用不读取或保存密码、token、推理、命令及工具输出。'
+                            ? '已接入 ChatGPT 订阅对应的 Codex 额度，并通过官方 App Server 增量读取隔离 OSS 会话。应用不读取或保存 ChatGPT 密码、token、推理、命令及工具输出。'
                             : '使用官方 ChatGPT 浏览器登录流程接入 Codex 订阅额度，不会要求你把 ChatGPT 密码或 token 粘贴到应用里。',
                         style: AppTextStyles.body.copyWith(
                           color: const Color(0xE6FFFFFF),
@@ -624,8 +637,8 @@ class ProfilePage extends StatelessWidget {
                       const SizedBox(height: 12),
                       Text(
                         controller.chatGptSupported
-                            ? '登录后会优先尝试使用 Codex 额度；如果本机没有 Codex 或你想改走独立 API，也可以继续使用下方的 DeepSeek API。'
-                            : 'Windows 端请安装 Codex 后重试；Android 端需要连接受信任的 Codex 网关。',
+                            ? '登录后可把账号的全局 AI 源切换为 Codex；也可手动选择 DeepSeek。系统不会自动在两者之间切换。'
+                            : 'Windows 端请安装 Codex；手机端请确认服务器已启用受信任 Codex 网关。',
                         textAlign: TextAlign.center,
                         style: AppTextStyles.caption.copyWith(
                           color: const Color(0xD9FFFFFF),
@@ -648,8 +661,10 @@ class ProfilePage extends StatelessWidget {
       text: controller.aiSettings.apiKey,
     );
     var enabled = controller.aiSettings.enabled;
+    var provider = controller.aiSettings.provider;
     var saving = false;
     var testing = false;
+    String? testedCandidateKey;
 
     try {
       await showCupertinoModalPopup<void>(
@@ -683,6 +698,8 @@ class ProfilePage extends StatelessWidget {
                         enabled: enabled,
                         apiKey: apiKeyController.text,
                         model: AiConnectionSettings.defaultModel,
+                        provider: provider,
+                        codexModel: controller.aiSettings.codexModel,
                         apiKeyConfigured:
                             apiKeyController.text.trim().isNotEmpty ||
                             controller.aiSettings.apiKeyConfigured,
@@ -693,11 +710,39 @@ class ProfilePage extends StatelessWidget {
 
                       Future<void> saveSettings() async {
                         if (saving) return;
+                        final candidateKey = apiKeyController.text.trim();
+                        if (currentSettings.usesDeepSeek &&
+                            candidateKey.isNotEmpty &&
+                            testedCandidateKey != candidateKey) {
+                          await showAppMessage(
+                            pageContext,
+                            title: '请先测试新 API Key',
+                            message:
+                                '为避免误覆盖当前账号已保存的 Key，请点击“测试连接”，选择“测试新填写 API”，测试成功后再保存。',
+                            tone: AppMessageTone.warning,
+                          );
+                          return;
+                        }
+                        if (currentSettings.usesDeepSeek &&
+                            candidateKey.isNotEmpty &&
+                            controller.aiSettings.apiKeyConfigured) {
+                          final confirmed = await showAppConfirmation(
+                            pageContext,
+                            title: '替换当前账号的旧 API Key？',
+                            message:
+                                '新 API 已测试成功。保存后会覆盖服务器中与当前账号绑定的旧 Key；旧 Key 不会显示，也无法从 App 恢复。',
+                            confirmLabel: '确认替换',
+                            destructive: true,
+                          );
+                          if (!confirmed) return;
+                        }
                         setModalState(() => saving = true);
                         final error = await controller.saveAiSettings(
                           enabled: currentSettings.enabled,
                           apiKey: currentSettings.apiKey,
                           model: currentSettings.model,
+                          provider: currentSettings.provider,
+                          codexModel: currentSettings.codexModel,
                         );
                         if (!sheetContext.mounted || !pageContext.mounted) {
                           return;
@@ -716,27 +761,103 @@ class ProfilePage extends StatelessWidget {
                         await showAppMessage(
                           pageContext,
                           title: '已保存',
-                          message:
-                              'DeepSeek API Key 已用 AES-256-GCM 加密保存在服务器；待翻译、待识别词性和其他字段会由后台队列自动处理。',
+                          message: currentSettings.usesCodex
+                              ? '全局 AI 源已切换为 Codex ${currentSettings.codexModel}。词库、摘要、课程计划和 AI Chat 将只使用 ChatGPT Codex 额度，不会回退到 DeepSeek。'
+                              : '全局 AI 源已切换为 DeepSeek V4 Flash。词库、摘要、课程计划和 AI Chat 将只使用 DeepSeek；API Key 以 AES-256-GCM 密文保存在服务器。',
                           tone: AppMessageTone.success,
                         );
                       }
 
                       Future<void> testConnection() async {
-                        if (testing || !currentSettings.ready) return;
+                        if (testing) return;
+                        var keySource = AiApiKeyTestSource.stored;
+                        if (currentSettings.usesDeepSeek) {
+                          final hasStoredKey =
+                              controller.aiSettings.apiKeyConfigured;
+                          final hasCandidateKey = apiKeyController.text
+                              .trim()
+                              .isNotEmpty;
+                          final selected =
+                              await showCupertinoModalPopup<AiApiKeyTestSource>(
+                                context: pageContext,
+                                builder: (choiceContext) => CupertinoActionSheet(
+                                  title: const Text('选择要测试的 API Key'),
+                                  message: const Text(
+                                    '测试只验证连接，不会保存、替换或删除服务器上的任何 Key。',
+                                  ),
+                                  actions: [
+                                    CupertinoActionSheetAction(
+                                      onPressed: hasStoredKey
+                                          ? () => Navigator.of(
+                                              choiceContext,
+                                            ).pop(AiApiKeyTestSource.stored)
+                                          : () {},
+                                      child: Text(
+                                        hasStoredKey
+                                            ? '测试旧 API · ${controller.aiSettings.apiKeyHint ?? '服务器已保存'}'
+                                            : '测试旧 API · 当前账号未保存',
+                                        style: TextStyle(
+                                          color: hasStoredKey
+                                              ? null
+                                              : CupertinoColors.inactiveGray,
+                                        ),
+                                      ),
+                                    ),
+                                    CupertinoActionSheetAction(
+                                      onPressed: hasCandidateKey
+                                          ? () => Navigator.of(
+                                              choiceContext,
+                                            ).pop(AiApiKeyTestSource.candidate)
+                                          : () {},
+                                      child: Text(
+                                        hasCandidateKey
+                                            ? '测试新填写 API · 不保存'
+                                            : '测试新填写 API · 请先输入',
+                                        style: TextStyle(
+                                          color: hasCandidateKey
+                                              ? null
+                                              : CupertinoColors.inactiveGray,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  cancelButton: CupertinoActionSheetAction(
+                                    onPressed: () =>
+                                        Navigator.of(choiceContext).pop(),
+                                    child: const Text('取消'),
+                                  ),
+                                ),
+                              );
+                          if (selected == null) return;
+                          keySource = selected;
+                        } else if (!controller.chatGptAiReady) {
+                          return;
+                        }
                         setModalState(() => testing = true);
                         final error = await controller.testAiConnection(
                           settings: currentSettings,
+                          keySource: keySource,
                         );
                         if (!sheetContext.mounted || !pageContext.mounted) {
                           return;
                         }
-                        setModalState(() => testing = false);
+                        setModalState(() {
+                          testing = false;
+                          if (error == null &&
+                              keySource == AiApiKeyTestSource.candidate) {
+                            testedCandidateKey = apiKeyController.text.trim();
+                          }
+                        });
                         await showAppMessage(
                           pageContext,
                           title: error == null ? '连接正常' : '连接失败',
                           message:
-                              error ?? 'DeepSeek 已连通，DeepSeek-V4-flash 可正常响应。',
+                              error ??
+                              (currentSettings.usesCodex
+                                  ? 'Codex 已使用 ${currentSettings.codexModel} 完成真实响应测试。'
+                                  : keySource == AiApiKeyTestSource.stored
+                                  ? '当前账号服务器上已保存的旧 API Key 连接正常；没有修改任何 Key。'
+                                  : '新填写的 API Key 连接正常；尚未保存，确认保存后才会替换旧 Key。'),
                           tone: error == null
                               ? AppMessageTone.success
                               : AppMessageTone.warning,
@@ -751,7 +872,7 @@ class ProfilePage extends StatelessWidget {
                               children: [
                                 const Expanded(
                                   child: Text(
-                                    'DeepSeek API',
+                                    'AI 模型源',
                                     style: AppTextStyles.title,
                                   ),
                                 ),
@@ -764,7 +885,7 @@ class ProfilePage extends StatelessWidget {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              '这里填写 DeepSeek API Key。保存后，Key 只以 AES-256-GCM 密文留在服务器；服务器只在有待补全字段时每 30 秒重试，队列清空后自动停止。App 不会取回明文。',
+                              '这是账号级全局 AI 开关。词库、对话与邮件/飞书摘要、课程计划和 AI Chat 都使用这里选中的来源。两个来源严格分流，失败时不会静默切换。',
                               style: AppTextStyles.body.copyWith(
                                 color: AppPalette.resolve(
                                   context,
@@ -773,19 +894,51 @@ class ProfilePage extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(height: 16),
+                            CupertinoSlidingSegmentedControl<AiProvider>(
+                              groupValue: provider,
+                              children: const {
+                                AiProvider.codex: Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  child: Text('Codex'),
+                                ),
+                                AiProvider.deepSeek: Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  child: Text('DeepSeek V4'),
+                                ),
+                              },
+                              onValueChanged: (value) {
+                                if (!saving && value != null) {
+                                  setModalState(() => provider = value);
+                                }
+                              },
+                            ),
+                            const SizedBox(height: 14),
                             AppCard(
-                              color: enabled
+                              color:
+                                  (provider == AiProvider.codex
+                                      ? controller.chatGptAiReady
+                                      : enabled)
                                   ? AppPalette.greenSoft
                                   : AppPalette.orangeSoft,
                               child: Row(
                                 children: [
                                   Icon(
-                                    enabled
+                                    (provider == AiProvider.codex
+                                            ? controller.chatGptAiReady
+                                            : enabled)
                                         ? CupertinoIcons.cloud_fill
                                         : CupertinoIcons.cloud,
                                     color: AppPalette.resolve(
                                       context,
-                                      enabled
+                                      (provider == AiProvider.codex
+                                              ? controller.chatGptAiReady
+                                              : enabled)
                                           ? AppPalette.green
                                           : AppPalette.orange,
                                     ),
@@ -793,9 +946,13 @@ class ProfilePage extends StatelessWidget {
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: Text(
-                                      enabled
-                                          ? '联网 AI 已启用；导入后立即进入服务器队列，自动补全翻译、音标、词性和例句。'
-                                          : '当前已关闭联网 AI；你可以先保存 API Key，再手动开启。',
+                                      provider == AiProvider.codex
+                                          ? controller.chatGptAiReady
+                                                ? '${currentSettings.codexModel} 已由当前 Codex 模型列表确认；所有已接入的 AI 功能都会统一使用它。'
+                                                : '${currentSettings.codexModel} 当前不可用。请重新登录并刷新 Codex 模型列表。'
+                                          : enabled
+                                          ? 'DeepSeek 已启用；服务器可在 App 关闭后继续处理待补全队列。'
+                                          : 'DeepSeek 当前关闭；可先保存 API Key，再手动开启。',
                                       style: AppTextStyles.body,
                                     ),
                                   ),
@@ -803,67 +960,74 @@ class ProfilePage extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(height: 14),
-                            CupertinoTextField(
-                              controller: apiKeyController,
-                              obscureText: true,
-                              autocorrect: false,
-                              enableSuggestions: false,
-                              placeholder:
-                                  controller.aiSettings.apiKeyConfigured
-                                  ? '已保存 ${controller.aiSettings.apiKeyHint ?? '加密 Key'}；留空保持不变'
-                                  : 'DeepSeek API Key',
-                              onChanged: (_) => setModalState(() {}),
-                              prefix: Padding(
-                                padding: const EdgeInsets.only(left: 12),
-                                child: Icon(
-                                  CupertinoIcons.lock_fill,
-                                  size: 18,
+                            if (provider == AiProvider.deepSeek)
+                              CupertinoTextField(
+                                controller: apiKeyController,
+                                obscureText: true,
+                                autocorrect: false,
+                                enableSuggestions: false,
+                                placeholder:
+                                    controller.aiSettings.apiKeyConfigured
+                                    ? '已保存 ${controller.aiSettings.apiKeyHint ?? '加密 Key'}；留空保持不变'
+                                    : 'DeepSeek API Key',
+                                onChanged: (_) => setModalState(
+                                  () => testedCandidateKey = null,
+                                ),
+                                prefix: Padding(
+                                  padding: const EdgeInsets.only(left: 12),
+                                  child: Icon(
+                                    CupertinoIcons.lock_fill,
+                                    size: 18,
+                                    color: AppPalette.resolve(
+                                      context,
+                                      AppPalette.secondaryText,
+                                    ),
+                                  ),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 13,
+                                ),
+                                decoration: BoxDecoration(
                                   color: AppPalette.resolve(
                                     context,
-                                    AppPalette.secondaryText,
+                                    AppPalette.softSurface,
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: AppPalette.resolve(
+                                      context,
+                                      AppPalette.separator,
+                                    ),
+                                    width: 0.6,
                                   ),
                                 ),
                               ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 13,
-                              ),
-                              decoration: BoxDecoration(
-                                color: AppPalette.resolve(
-                                  context,
-                                  AppPalette.softSurface,
-                                ),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: AppPalette.resolve(
-                                    context,
-                                    AppPalette.separator,
+                            if (provider == AiProvider.deepSeek)
+                              const SizedBox(height: 10),
+                            if (provider == AiProvider.deepSeek)
+                              Row(
+                                children: [
+                                  const Text(
+                                    '启用联网 AI',
+                                    style: AppTextStyles.body,
                                   ),
-                                  width: 0.6,
-                                ),
+                                  const Spacer(),
+                                  CupertinoSwitch(
+                                    value: enabled,
+                                    onChanged: saving
+                                        ? null
+                                        : (value) => setModalState(
+                                            () => enabled = value,
+                                          ),
+                                  ),
+                                ],
                               ),
-                            ),
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                const Text(
-                                  '启用联网 AI',
-                                  style: AppTextStyles.body,
-                                ),
-                                const Spacer(),
-                                CupertinoSwitch(
-                                  value: enabled,
-                                  onChanged: saving
-                                      ? null
-                                      : (value) => setModalState(
-                                          () => enabled = value,
-                                        ),
-                                ),
-                              ],
-                            ),
                             const SizedBox(height: 8),
                             Text(
-                              controller.aiSettings.serverEncryptionReady
+                              provider == AiProvider.codex
+                                  ? 'Codex 模型来自 App Server 的实时 model/list；手机使用实际后端的账号隔离 App Server，不在客户端保存 ChatGPT token。当前：${currentSettings.codexModel}。'
+                                  : controller.aiSettings.serverEncryptionReady
                                   ? '服务器加密层已就绪 · 模型固定为 DeepSeek-V4-flash · Key 不会返回客户端。'
                                   : '服务器还未设置 AILO_SECRETS_MASTER_KEY；设置前不会接受或明文保存 API Key。',
                               style: AppTextStyles.caption.copyWith(
@@ -885,7 +1049,11 @@ class ProfilePage extends StatelessWidget {
                               fullWidth: true,
                               filled: false,
                               onPressed:
-                                  (testing || saving || !currentSettings.ready)
+                                  (testing ||
+                                      saving ||
+                                      (currentSettings.usesCodex
+                                          ? !controller.chatGptAiReady
+                                          : !currentSettings.ready))
                                   ? null
                                   : testConnection,
                             ),

@@ -209,7 +209,7 @@ class _AuthPageState extends State<AuthPage> {
                           const SizedBox(height: 8),
                           Text(
                             controller.chatGptSupported
-                                ? '通过官方 ChatGPT 登录流程接入 chatgpt5.5，登录后会优先使用 Codex 额度，不需要在这里输入 ChatGPT 密码。'
+                                ? '通过官方 ChatGPT 登录流程接入 Codex；登录后自动读取账号实际可用模型，不需要在这里输入 ChatGPT 密码。'
                                 : 'ChatGPT 登录需要 Windows 上的 Codex App Server；Android 端请先配置受信任网关。',
                             textAlign: TextAlign.center,
                             style: AppTextStyles.caption.copyWith(

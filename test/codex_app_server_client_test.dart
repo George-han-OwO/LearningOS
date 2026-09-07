@@ -5,6 +5,17 @@ import 'package:ai_study_os/core/codex/codex_app_server_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('closed transport is not a reusable initialized client', () async {
+    final transport = _FakeCodexTransport();
+    final client = CodexAppServerClient(transport: transport);
+    await client.start();
+    expect(client.isInitialized, isTrue);
+    await transport.close();
+    await Future<void>.delayed(Duration.zero);
+    expect(client.isInitialized, isFalse);
+    await client.dispose();
+  });
+
   test(
     'reads ChatGPT Codex quota windows from the official protocol',
     () async {
@@ -56,6 +67,48 @@ void main() {
       await client.dispose();
     },
   );
+
+  test('reads every visible model/list page and de-duplicates ids', () async {
+    final transport = _FakeCodexTransport();
+    final client = CodexAppServerClient(
+      requestTimeout: const Duration(seconds: 1),
+      transport: transport,
+    );
+    await client.start(experimentalApi: true);
+
+    expect(await client.listModels(), [
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5.6-sol',
+    ]);
+    await client.dispose();
+  });
+
+  test('device-code login completes from App Server notification', () async {
+    final transport = _FakeCodexTransport();
+    final client = CodexAppServerClient(
+      requestTimeout: const Duration(seconds: 1),
+      transport: transport,
+    );
+    await client.start(experimentalApi: true);
+
+    final challenge = await client.startChatGptDeviceCodeLogin();
+    expect(challenge.loginId, 'login-device-1');
+    expect(
+      challenge.verificationUrl.toString(),
+      'https://auth.openai.com/codex/device',
+    );
+    expect(challenge.userCode, 'ABCD-1234');
+
+    final state = await client.completeChatGptLogin(
+      challenge,
+      timeout: const Duration(seconds: 1),
+    );
+    expect(state.authenticated, isTrue);
+    expect(state.account?.type, 'chatgpt');
+    expect(state.account?.planType, 'plus');
+    await client.dispose();
+  });
 }
 
 class _FakeCodexTransport implements CodexJsonlTransport {
@@ -106,6 +159,38 @@ class _FakeCodexTransport implements CodexJsonlTransport {
         ],
         'nextCursor': null,
       },
+      'model/list' =>
+        (request['params'] as Map?)?['cursor'] == 'models-2'
+            ? {
+                'data': [
+                  // Repeated ids are legal across a changing paginated catalog.
+                  {'id': 'gpt-5.6-luna'},
+                  {'model': 'gpt-5.6-sol', 'isDefault': true},
+                ],
+                'nextCursor': null,
+              }
+            : {
+                'data': [
+                  {'id': 'gpt-5.6-terra', 'displayName': 'GPT-5.6 Terra'},
+                  {'id': 'gpt-5.6-luna', 'displayName': 'GPT-5.6 Luna'},
+                ],
+                'nextCursor': 'models-2',
+              },
+      'account/login/start' => {
+        'type': 'chatgptDeviceCode',
+        'loginId': 'login-device-1',
+        'verificationUrl': 'https://auth.openai.com/codex/device',
+        'userCode': 'ABCD-1234',
+      },
+      'account/read' => {
+        'account': {
+          'type': 'chatgpt',
+          'accountId': 'account-1',
+          'email': 'learner@example.test',
+          'planType': 'plus',
+        },
+        'requiresOpenaiAuth': false,
+      },
       'thread/turns/list' => {
         'data': [
           {
@@ -133,6 +218,20 @@ class _FakeCodexTransport implements CodexJsonlTransport {
     scheduleMicrotask(
       () => _lines.add(jsonEncode({'id': id, 'result': result})),
     );
+    if (method == 'account/login/start') {
+      Future<void>.delayed(const Duration(milliseconds: 10), () {
+        _lines.add(
+          jsonEncode({
+            'method': 'account/login/completed',
+            'params': {
+              'loginId': 'login-device-1',
+              'success': true,
+              'error': null,
+            },
+          }),
+        );
+      });
+    }
   }
 
   @override

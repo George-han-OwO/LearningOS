@@ -1,6 +1,10 @@
 import 'dart:async';
 
 import '../../data/app_database.dart';
+import '../../domain/models.dart';
+import '../../domain/word_parser.dart';
+import '../codex/server_codex_gateway.dart';
+import 'ai_service.dart';
 import 'hybrid_ai_service.dart';
 
 class PendingWordEnrichmentResult {
@@ -36,10 +40,11 @@ class PendingWordEnrichmentResult {
 /// Per-user locks make a mobile-triggered check and the background 30-second
 /// worker safe to run at the same time without duplicate provider requests.
 class PendingWordEnrichmentProcessor {
-  PendingWordEnrichmentProcessor(this.db, this.aiService);
+  PendingWordEnrichmentProcessor(this.db, this.aiService, {this.codexGateway});
 
   final AppDatabase db;
   final HybridAiService aiService;
+  final ServerCodexGateway? codexGateway;
   final Set<int> _busyUsers = <int>{};
 
   Future<PendingWordEnrichmentResult> runForUser(int userId) async {
@@ -56,16 +61,15 @@ class PendingWordEnrichmentProcessor {
     }
 
     try {
-      if (!db.secretVaultReady) {
+      final settings = await db.aiSettings(userId);
+      if (!settings.usesCodex && !db.secretVaultReady) {
         return _result(
           status: 'waiting_for_server_key',
           pendingCount: initialPending,
           message: '服务器密钥保险库尚未配置，队列会每 30 秒继续检查。',
         );
       }
-
-      final settings = await db.aiSettings();
-      if (!settings.ready) {
+      if (!settings.usesCodex && !settings.ready) {
         return _result(
           status: 'waiting_for_api_key',
           pendingCount: initialPending,
@@ -74,10 +78,12 @@ class PendingWordEnrichmentProcessor {
       }
 
       final pendingWords = await db.pendingWordsForUser(userId, limit: 20);
-      final report = await aiService.enrichWords(
-        settings: settings,
-        words: pendingWords,
-      );
+      final report = settings.usesCodex
+          ? await _enrichWithCodex(userId, settings, pendingWords)
+          : await aiService.enrichWords(
+              settings: settings,
+              words: pendingWords,
+            );
       if (report.enrichedCount > 0) {
         await db.updateWordEnrichments(userId: userId, words: report.words);
       }
@@ -120,6 +126,20 @@ class PendingWordEnrichmentProcessor {
     } finally {
       _busyUsers.remove(userId);
     }
+  }
+
+  Future<AiEnrichmentReport> _enrichWithCodex(
+    int userId,
+    AiConnectionSettings settings,
+    List<ParsedWord> words,
+  ) async {
+    final gateway = codexGateway;
+    if (gateway == null || !gateway.enabled) {
+      throw StateError('服务器 Codex 网关尚未启用。');
+    }
+    final user = await db.userForId(userId);
+    if (user == null) throw StateError('用户不存在。');
+    return gateway.enrichWords(user, settings, words);
   }
 
   Future<List<PendingWordEnrichmentResult>> runAll() async {

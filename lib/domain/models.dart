@@ -70,22 +70,79 @@ class StoredCredential {
   final String passwordSalt;
 }
 
+enum AiProvider {
+  codex,
+  deepSeek;
+
+  String get apiValue => this == AiProvider.codex ? 'codex' : 'deepseek';
+
+  static AiProvider fromApiValue(Object? value) =>
+      value?.toString().trim().toLowerCase() == 'codex'
+      ? AiProvider.codex
+      : AiProvider.deepSeek;
+}
+
+enum AiApiKeyTestSource {
+  stored,
+  candidate;
+
+  String get apiValue => name;
+}
+
 class AiConnectionSettings {
   const AiConnectionSettings({
     required this.enabled,
     required this.apiKey,
     required this.model,
+    this.provider = AiProvider.deepSeek,
+    this.codexModel = defaultCodexModel,
     this.apiKeyConfigured = false,
     this.apiKeyHint,
     this.serverEncryptionReady = false,
   });
 
   static const defaultModel = 'deepseek-v4-flash';
+  // GPT-5.4 was retired for ChatGPT-login Codex on 2026-08-31. This is only
+  // the migration preference; every use still validates against model/list.
+  static const defaultCodexModel = 'gpt-5.6-terra';
+
+  static String migrateCodexModel(String value) {
+    return switch (value.trim()) {
+      '' => defaultCodexModel,
+      'gpt-5.4' => 'gpt-5.6-terra',
+      'gpt-5.4-mini' => 'gpt-5.6-luna',
+      final model => model,
+    };
+  }
+
+  /// Chooses only from ids returned by the active Codex App Server.
+  static String? selectCodexModel(
+    Iterable<String> advertisedModels, {
+    String? requested,
+  }) {
+    final models = advertisedModels
+        .map((model) => model.trim())
+        .where((model) => model.isNotEmpty)
+        .toList(growable: false);
+    if (models.isEmpty) return null;
+    final selected = migrateCodexModel(requested ?? '');
+    if (models.contains(selected)) return selected;
+    for (final fallback in const [
+      'gpt-5.6-terra',
+      'gpt-5.6-sol',
+      'gpt-5.6-luna',
+    ]) {
+      if (models.contains(fallback)) return fallback;
+    }
+    return models.first;
+  }
 
   static const empty = AiConnectionSettings(
     enabled: false,
     apiKey: '',
     model: defaultModel,
+    provider: AiProvider.deepSeek,
+    codexModel: defaultCodexModel,
     apiKeyConfigured: false,
     serverEncryptionReady: false,
   );
@@ -93,6 +150,8 @@ class AiConnectionSettings {
   final bool enabled;
   final String apiKey;
   final String model;
+  final AiProvider provider;
+  final String codexModel;
   final bool apiKeyConfigured;
   final String? apiKeyHint;
   final bool serverEncryptionReady;
@@ -105,10 +164,15 @@ class AiConnectionSettings {
   /// services must use this instead of [ready] so they never send an empty key.
   bool get hasClientApiKey => enabled && apiKey.trim().isNotEmpty;
 
+  bool get usesCodex => provider == AiProvider.codex;
+  bool get usesDeepSeek => provider == AiProvider.deepSeek;
+
   AiConnectionSettings copyWith({
     bool? enabled,
     String? apiKey,
     String? model,
+    AiProvider? provider,
+    String? codexModel,
     bool? apiKeyConfigured,
     String? apiKeyHint,
     bool? serverEncryptionReady,
@@ -117,6 +181,8 @@ class AiConnectionSettings {
       enabled: enabled ?? this.enabled,
       apiKey: apiKey ?? this.apiKey,
       model: model ?? this.model,
+      provider: provider ?? this.provider,
+      codexModel: codexModel ?? this.codexModel,
       apiKeyConfigured: apiKeyConfigured ?? this.apiKeyConfigured,
       apiKeyHint: apiKeyHint ?? this.apiKeyHint,
       serverEncryptionReady:
