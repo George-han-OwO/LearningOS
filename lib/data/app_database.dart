@@ -226,6 +226,10 @@ class AppDatabase {
       apiKeyConfigured: data['api_key_configured'] == true,
       apiKeyHint: data['api_key_hint']?.toString(),
       serverEncryptionReady: data['encryption_ready'] == true,
+      autoReturnToCodex: data['auto_return_to_codex'] == true,
+      codexResumeAt: DateTime.tryParse(
+        data['codex_resume_at']?.toString() ?? '',
+      )?.toLocal(),
     );
   }
 
@@ -239,6 +243,7 @@ class AppDatabase {
         'model': settings.model,
         'provider': settings.provider.apiValue,
         'codex_model': settings.codexModel,
+        'auto_return_to_codex': settings.autoReturnToCodex,
       },
     );
   }

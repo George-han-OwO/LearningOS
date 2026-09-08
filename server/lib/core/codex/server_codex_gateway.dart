@@ -337,6 +337,74 @@ class ServerCodexGateway {
     });
   }
 
+  /// Marks DeepSeek as the temporary route until Codex's primary (normally
+  /// five-hour) usage window resets. The exact server-provided reset instant
+  /// is preferred over calculating five hours on the phone.
+  Future<DateTime> scheduleReturnAfterQuotaReset(AppUser user) async {
+    var resumeAt = DateTime.now().toUtc().add(const Duration(hours: 5));
+    try {
+      final quota = await _withUserClient(
+        user,
+        (client) => client.readRateLimits(),
+      );
+      final advertised = quota.primary?.resetsAt;
+      if (advertised != null && advertised.isAfter(DateTime.now().toUtc())) {
+        resumeAt = advertised.toUtc();
+      }
+    } catch (_) {
+      // A quota error may have closed the process. The conservative five-hour
+      // retry still keeps requests on DeepSeek until Codex can be checked.
+    }
+    await _database.scheduleCodexReturn(user.id, resumeAt);
+    return resumeAt;
+  }
+
+  /// Runs on the backend even while the mobile app is closed. A due account
+  /// returns to Codex only after App Server confirms non-zero primary quota.
+  Future<int> restoreDueCodexProviders() async {
+    if (!enabled) return 0;
+    var restored = 0;
+    final now = DateTime.now().toUtc();
+    for (final userId in await _database.userIdsDueForCodexReturn(now)) {
+      final user = await _database.userForId(userId);
+      if (user == null) continue;
+      try {
+        final quota = await _withUserClient(
+          user,
+          (client) => client.readRateLimits(),
+        );
+        final primary = quota.primary;
+        final remaining = primary == null
+            ? null
+            : (100 - primary.usedPercent).clamp(0, 100);
+        if (remaining != null && remaining > 0) {
+          await _database.restoreCodexProvider(userId);
+          restored++;
+          continue;
+        }
+        await _database.scheduleCodexReturn(
+          userId,
+          primary?.resetsAt?.toUtc() ?? now.add(const Duration(minutes: 1)),
+        );
+      } catch (_) {
+        await _database.scheduleCodexReturn(
+          userId,
+          now.add(const Duration(minutes: 1)),
+        );
+      }
+    }
+    return restored;
+  }
+
+  static bool isQuotaFailure(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('quota') ||
+        text.contains('rate limit') ||
+        text.contains('usage limit') ||
+        text.contains('额度') ||
+        text.contains('429');
+  }
+
   Future<Map<String, Object?>> readHistory(
     AppUser user, {
     required bool fullRefresh,
@@ -731,6 +799,12 @@ class CodexHistorySyncWorker {
     if (_running || !gateway.enabled) return;
     _running = true;
     try {
+      final restored = await gateway.restoreDueCodexProviders();
+      if (restored > 0) {
+        print(
+          'Codex quota restored for $restored user(s); route switched back.',
+        );
+      }
       final count = await gateway.syncAllHistories();
       if (count > 0) print('Codex OSS sync persisted $count conversation(s).');
     } finally {

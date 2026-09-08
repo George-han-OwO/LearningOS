@@ -6,6 +6,7 @@ import 'ai/ai_service.dart';
 import 'codex/chatgpt_auth_service.dart';
 import '../data/app_database.dart';
 import '../domain/auto_note_schedule.dart';
+import '../domain/canvas_todo.dart';
 import '../domain/learning_engine.dart';
 import '../domain/learning_journal.dart';
 import '../domain/models.dart';
@@ -65,6 +66,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   bool _pendingWordBackendAvailable = true;
   PendingWordEnrichmentState _pendingWordEnrichmentState =
       PendingWordEnrichmentState.idle;
+  CanvasTodoState _canvasTodoState = const CanvasTodoState.initial();
   bool _busy = false;
   DateTime? _lastCodexQuotaRefreshAt;
 
@@ -84,6 +86,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   ConversationSyncState get conversationSyncState => _conversationSyncState;
   PendingWordEnrichmentState get pendingWordEnrichmentState =>
       _pendingWordEnrichmentState;
+  CanvasTodoState get canvasTodoState => _canvasTodoState;
   EmailSyncState emailSyncState(EmailProvider provider) =>
       _emailSyncStates[provider] ?? EmailSyncState.defaultFor(provider);
   bool get chatGptSupported => _chatGptAuthService.supported;
@@ -102,6 +105,112 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     String courseId, {
     String? cursor,
   }) => _database.canvasAssignments(courseId, cursor: cursor);
+
+  Future<void> refreshCanvasTodos() async {
+    if (currentUser == null || _canvasTodoState.loading) return;
+    _canvasTodoState = CanvasTodoState(
+      connected: _canvasTodoState.connected,
+      loading: true,
+      items: _canvasTodoState.items,
+      profileName: _canvasTodoState.profileName,
+      refreshedAt: _canvasTodoState.refreshedAt,
+    );
+    notifyListeners();
+    try {
+      final connection = await canvasConnection();
+      if (connection['connected'] != true) {
+        _canvasTodoState = const CanvasTodoState.initial();
+        notifyListeners();
+        return;
+      }
+      final profile = connection['profile'];
+      final profileName = profile is Map ? profile['name']?.toString() : null;
+      final courses = await _loadAllCanvasCourses();
+      final assignmentGroups = await Future.wait([
+        for (final course in courses) _loadAllCanvasAssignments(course),
+      ]);
+      final items = <CanvasTodoItem>[];
+      final seen = <String>{};
+      for (final group in assignmentGroups) {
+        for (final item in group) {
+          final key = '${item.courseName}:${item.id}';
+          if (seen.add(key)) items.add(item);
+        }
+      }
+      _canvasTodoState = CanvasTodoState(
+        connected: true,
+        loading: false,
+        items: items,
+        profileName: profileName,
+        refreshedAt: DateTime.now(),
+      );
+    } catch (error) {
+      _canvasTodoState = CanvasTodoState(
+        connected: _canvasTodoState.connected,
+        loading: false,
+        items: _canvasTodoState.items,
+        profileName: _canvasTodoState.profileName,
+        error: _cleanCanvasError(error),
+        refreshedAt: _canvasTodoState.refreshedAt,
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<List<Map<String, dynamic>>> _loadAllCanvasCourses() async {
+    final result = <Map<String, dynamic>>[];
+    String? cursor;
+    for (var pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+      final page = await canvasCourses(cursor: cursor);
+      result.addAll(_canvasPageItems(page));
+      cursor = page['next_cursor']?.toString();
+      if (cursor == null || cursor.isEmpty) break;
+    }
+    return result;
+  }
+
+  Future<List<CanvasTodoItem>> _loadAllCanvasAssignments(
+    Map<String, dynamic> course,
+  ) async {
+    final courseId = course['id']?.toString() ?? '';
+    if (courseId.isEmpty) return const [];
+    final courseName =
+        course['name']?.toString() ??
+        course['course_code']?.toString() ??
+        'Canvas 课程';
+    final result = <CanvasTodoItem>[];
+    String? cursor;
+    for (var pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+      final page = await canvasAssignments(courseId, cursor: cursor);
+      for (final assignment in _canvasPageItems(page)) {
+        result.add(
+          CanvasTodoItem.fromApi(
+            assignment: assignment,
+            courseName: courseName,
+          ),
+        );
+      }
+      cursor = page['next_cursor']?.toString();
+      if (cursor == null || cursor.isEmpty) break;
+    }
+    return result;
+  }
+
+  static List<Map<String, dynamic>> _canvasPageItems(
+    Map<String, dynamic> page,
+  ) => (page['items'] as List? ?? const [])
+      .whereType<Map>()
+      .map((item) => Map<String, dynamic>.from(item))
+      .toList(growable: false);
+
+  static String _cleanCanvasError(Object error) {
+    var value = error.toString().trim();
+    while (RegExp(r'^(Bad state|StateError):\s*').hasMatch(value)) {
+      value = value.replaceFirst(RegExp(r'^(Bad state|StateError):\s*'), '');
+    }
+    return value.isEmpty ? 'Canvas 同步失败。' : value;
+  }
+
   bool get chatGptAiReady =>
       _chatGptAuth.authenticated &&
       _codexModels.contains(_aiSettings.codexModel);
@@ -146,6 +255,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         _startConversationSyncTimer();
         _startPendingWordEnrichmentTimer();
         _startCodexRealtimeBridge();
+        unawaited(refreshCanvasTodos());
+        if (_chatGptAuth.authenticated) unawaited(refreshAiUsage());
       }
     } catch (_) {
       _currentUser = null;
@@ -245,6 +356,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         _startConversationSyncTimer();
         _startPendingWordEnrichmentTimer();
         _startCodexRealtimeBridge(fullRefresh: true);
+        unawaited(refreshCanvasTodos());
+        unawaited(refreshAiUsage());
         return null;
       } catch (error) {
         if (challenge != null &&
@@ -325,6 +438,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
       _startCodexRealtimeBridge();
+      unawaited(refreshCanvasTodos());
       return null;
     });
   }
@@ -359,6 +473,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
       _startCodexRealtimeBridge();
+      unawaited(refreshCanvasTodos());
       return null;
     });
   }
@@ -389,6 +504,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
       _startCodexRealtimeBridge();
+      unawaited(refreshCanvasTodos());
       return null;
     });
   }
@@ -411,6 +527,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _conversationSyncBackendAvailable = true;
     _pendingWordBackendAvailable = true;
     _pendingWordEnrichmentState = PendingWordEnrichmentState.idle;
+    _canvasTodoState = const CanvasTodoState.initial();
     _emailSyncStates = {
       for (final provider in EmailProvider.values)
         provider: EmailSyncState.defaultFor(provider),
@@ -1165,14 +1282,29 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       return '暂时无法刷新 Codex 账号或模型列表，请稍后重试。';
     }
+    await refreshAiUsage();
+    return _codexQuota.available
+        ? null
+        : (_codexQuota.message ?? '账号已刷新，但暂时无法读取 Codex 额度。');
+  }
+
+  Future<void> refreshAiUsage() async {
+    if (!_chatGptAuth.authenticated || !_chatGptAuthService.supported) {
+      _codexQuota = const ChatGptCodexQuotaState.unavailable(
+        '连接 ChatGPT-Codex 后可查看用量和剩余额度。',
+      );
+      notifyListeners();
+      return;
+    }
     try {
       _codexQuota = await _chatGptAuthService.readQuota();
       _lastCodexQuotaRefreshAt = DateTime.now();
-      notifyListeners();
-      return _codexQuota.message;
-    } catch (_) {
-      return '账号和模型已刷新，但暂时无法读取 Codex 额度。';
+      final user = _currentUser;
+      if (user != null) _aiSettings = await _database.aiSettings(user.id);
+    } catch (error) {
+      _codexQuota = ChatGptCodexQuotaState.unavailable('Codex 额度读取失败：$error');
     }
+    notifyListeners();
   }
 
   Future<void> _refreshCodexRealtimeBridge({
@@ -1195,6 +1327,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         try {
           _codexQuota = await _chatGptAuthService.readQuota();
           _lastCodexQuotaRefreshAt = now;
+          _aiSettings = await _database.aiSettings(user.id);
         } catch (error) {
           _codexQuota = ChatGptCodexQuotaState.unavailable('额度读取失败：$error');
         }
@@ -1360,6 +1493,8 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _startConversationSyncTimer();
       _startPendingWordEnrichmentTimer();
       _startCodexRealtimeBridge(fullRefresh: true);
+      unawaited(refreshCanvasTodos());
+      if (_chatGptAuth.authenticated) unawaited(refreshAiUsage());
     }
   }
 
@@ -1369,6 +1504,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     required String model,
     required AiProvider provider,
     String codexModel = AiConnectionSettings.defaultCodexModel,
+    bool? autoReturnToCodex,
   }) async {
     return _guard(() async {
       if (provider == AiProvider.codex && !_chatGptAuth.authenticated) {
@@ -1395,6 +1531,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
             apiKey.trim().isNotEmpty || _aiSettings.apiKeyConfigured,
         apiKeyHint: _aiSettings.apiKeyHint,
         serverEncryptionReady: _aiSettings.serverEncryptionReady,
+        autoReturnToCodex: autoReturnToCodex ?? _aiSettings.autoReturnToCodex,
       );
       final user = _requireUser();
       await _database.saveAiSettings(user.id, settings);

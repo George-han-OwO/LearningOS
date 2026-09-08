@@ -50,7 +50,7 @@ class AppDatabase {
     final database = await factory.openDatabase(
       databasePath,
       options: OpenDatabaseOptions(
-        version: 14,
+        version: 15,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -75,6 +75,9 @@ class AppDatabase {
           if (oldVersion < 12) await _migrateRetiredCodexModels(db);
           if (oldVersion < 13) await _createCanvasConnectionsTable(db);
           if (oldVersion < 14) await _createCodexLoginAttemptsTable(db);
+          if (oldVersion >= 10 && oldVersion < 15) {
+            await _addCodexAutoReturnColumns(db);
+          }
         },
       ),
     );
@@ -226,10 +229,22 @@ class AppDatabase {
         codex_model TEXT NOT NULL DEFAULT 'gpt-5.6-terra',
         deepseek_api_key_encrypted_v1 TEXT NOT NULL DEFAULT '',
         deepseek_api_key_hint TEXT,
+        auto_return_to_codex INTEGER NOT NULL DEFAULT 0,
+        codex_resume_at TEXT,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     ''');
+  }
+
+  static Future<void> _addCodexAutoReturnColumns(Database db) async {
+    await db.execute(
+      'ALTER TABLE user_ai_settings ADD COLUMN '
+      'auto_return_to_codex INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE user_ai_settings ADD COLUMN codex_resume_at TEXT',
+    );
   }
 
   static Future<void> _migrateRetiredCodexModels(Database db) async {
@@ -684,6 +699,10 @@ class AppDatabase {
       codexModel: AiConnectionSettings.migrateCodexModel(
         row['codex_model'] as String? ?? '',
       ),
+      autoReturnToCodex: row['auto_return_to_codex'] == 1,
+      codexResumeAt: DateTime.tryParse(
+        row['codex_resume_at'] as String? ?? '',
+      )?.toUtc(),
     );
   }
 
@@ -758,8 +777,49 @@ class AppDatabase {
       'deepseek_api_key_hint': clearApiKey
           ? null
           : hint ?? existing?['deepseek_api_key_hint'],
+      'auto_return_to_codex': settings.autoReturnToCodex ? 1 : 0,
+      'codex_resume_at': settings.codexResumeAt?.toUtc().toIso8601String(),
       'updated_at': DateTime.now().toIso8601String(),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> scheduleCodexReturn(int userId, DateTime resumeAt) async {
+    await _database.update(
+      'user_ai_settings',
+      {
+        'provider': AiProvider.deepSeek.apiValue,
+        'auto_return_to_codex': 1,
+        'codex_resume_at': resumeAt.toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+  }
+
+  Future<List<int>> userIdsDueForCodexReturn(DateTime now) async {
+    final rows = await _database.query(
+      'user_ai_settings',
+      columns: const ['user_id'],
+      where:
+          'auto_return_to_codex = 1 AND provider = ? '
+          'AND codex_resume_at IS NOT NULL AND codex_resume_at <= ?',
+      whereArgs: [AiProvider.deepSeek.apiValue, now.toUtc().toIso8601String()],
+    );
+    return rows.map((row) => row['user_id']! as int).toList(growable: false);
+  }
+
+  Future<void> restoreCodexProvider(int userId) async {
+    await _database.update(
+      'user_ai_settings',
+      {
+        'provider': AiProvider.codex.apiValue,
+        'codex_resume_at': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'user_id = ? AND auto_return_to_codex = 1',
+      whereArgs: [userId],
+    );
   }
 
   Future<AppUser> createUser({

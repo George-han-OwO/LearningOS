@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import '../../core/app_scope.dart';
 import '../../design/app_theme.dart';
 import '../../design/app_widgets.dart';
+import '../../domain/canvas_todo.dart';
 import '../shell/app_shell.dart';
 
 class TodayPage extends StatelessWidget {
@@ -19,15 +20,31 @@ class TodayPage extends StatelessWidget {
         .where((note) => _isToday(note.updatedAt))
         .length;
     final dueWords = stats.dueWords;
+    final canvas = controller.canvasTodoState;
 
     return AppPage(
       title: '主页',
       subtitle: '${user.displayName} · ${_todayLabel()}',
+      actions: [
+        CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: const Size(42, 42),
+          onPressed: () => onNavigate(AppDestination.settings),
+          child: _HomeAvatar(name: user.displayName),
+        ),
+      ],
+      inlineMobileActions: true,
       child: Column(
         children: [
           AppGroup(
             title: '今日待办',
+            trailing: AppIconButton(
+              icon: CupertinoIcons.refresh,
+              semanticLabel: '刷新 Canvas 待办',
+              onPressed: canvas.loading ? null : controller.refreshCanvasTodos,
+            ),
             children: [
+              ..._canvasPendingRows(canvas),
               AppGroupRow(
                 icon: dueWords == 0
                     ? CupertinoIcons.check_mark_circled_solid
@@ -56,6 +73,15 @@ class TodayPage extends StatelessWidget {
           AppGroup(
             title: '已完成',
             children: [
+              for (final item in canvas.completed.take(3))
+                AppGroupRow(
+                  icon: CupertinoIcons.check_mark_circled_solid,
+                  title: item.title,
+                  subtitle: 'Canvas · ${item.courseName} · ${item.statusLabel}',
+                  tint: AppPalette.green,
+                  tintBackground: AppPalette.greenSoft,
+                  onTap: () => onNavigate(AppDestination.settings),
+                ),
               AppGroupRow(
                 icon: CupertinoIcons.check_mark_circled_solid,
                 title: '${stats.reviewsCompleted} 次单词复习',
@@ -101,5 +127,126 @@ class TodayPage extends StatelessWidget {
     return local.year == now.year &&
         local.month == now.month &&
         local.day == now.day;
+  }
+
+  List<Widget> _canvasPendingRows(CanvasTodoState state) {
+    if (state.loading && state.items.isEmpty) {
+      return const [
+        AppGroupRow(
+          icon: CupertinoIcons.cloud_download,
+          title: '正在同步 Canvas 作业',
+          subtitle: '由另一台电脑上的 AILearningOS 后端读取',
+          trailing: CupertinoActivityIndicator(),
+        ),
+      ];
+    }
+    if (state.error != null) {
+      return [
+        AppGroupRow(
+          icon: CupertinoIcons.exclamationmark_triangle_fill,
+          title: 'Canvas 同步失败',
+          subtitle: state.error,
+          tint: AppPalette.orange,
+          tintBackground: AppPalette.orangeSoft,
+          onTap: () => onNavigate(AppDestination.settings),
+        ),
+      ];
+    }
+    if (!state.connected) {
+      return [
+        AppGroupRow(
+          icon: CupertinoIcons.cloud,
+          title: '连接 Canvas 信息源',
+          subtitle: '连接后，作业、截止时间和提交状态会进入待办',
+          onTap: () => onNavigate(AppDestination.settings),
+        ),
+      ];
+    }
+    final pending = state.pending;
+    if (pending.isEmpty) {
+      return const [
+        AppGroupRow(
+          icon: CupertinoIcons.check_mark_circled_solid,
+          title: 'Canvas 待办已清空',
+          subtitle: '当前没有未提交作业',
+          tint: AppPalette.green,
+          tintBackground: AppPalette.greenSoft,
+        ),
+      ];
+    }
+    return [
+      for (final item in pending.take(5))
+        AppGroupRow(
+          icon: item.overdue
+              ? CupertinoIcons.exclamationmark_triangle_fill
+              : CupertinoIcons.calendar,
+          title: item.title,
+          subtitle:
+              'Canvas · ${item.courseName} · ${_dueLabel(item.dueAt)} · ${item.statusLabel}',
+          tint: item.overdue ? AppPalette.orange : AppPalette.blue,
+          tintBackground: item.overdue
+              ? AppPalette.orangeSoft
+              : AppPalette.blueSoft,
+          onTap: () => onNavigate(AppDestination.settings),
+        ),
+      if (pending.length > 5)
+        AppGroupRow(
+          icon: CupertinoIcons.ellipsis_circle,
+          title: '还有 ${pending.length - 5} 项 Canvas 待办',
+          subtitle: '进入 Settings 查看 Canvas 信息源',
+          onTap: () => onNavigate(AppDestination.settings),
+        ),
+    ];
+  }
+
+  static String _dueLabel(DateTime? dueAt) {
+    if (dueAt == null) return '无截止时间';
+    final value = dueAt.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(value.year, value.month, value.day);
+    final time =
+        '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+    if (value.isBefore(now)) return '已逾期 · ${value.month}月${value.day}日 $time';
+    if (date == today) return '今天 $time';
+    if (date == today.add(const Duration(days: 1))) return '明天 $time';
+    return '${value.month}月${value.day}日 $time';
+  }
+}
+
+class _HomeAvatar extends StatelessWidget {
+  const _HomeAvatar({required this.name});
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = name.trim();
+    return Semantics(
+      label: '打开账号与设置',
+      button: true,
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            colors: [
+              AppPalette.resolve(context, AppPalette.blue),
+              AppPalette.resolve(context, AppPalette.purple),
+            ],
+          ),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          trimmed.isEmpty ? '?' : trimmed.substring(0, 1).toUpperCase(),
+          style: const TextStyle(
+            color: Color(0xFFFFFFFF),
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
   }
 }

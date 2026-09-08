@@ -44,11 +44,11 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-09-07-codex-login-recovery-v3.9',
+        'build': '2026-09-08-canvas-codex-autoreturn-v4.0',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
         'ai': 'codex-account-model-list-or-deepseek-v4-flash',
-        'ai_provider_switch': 'persistent-strict-no-silent-fallback',
+        'ai_provider_switch': 'manual-or-explicit-codex-quota-auto-return',
         'ai_features': {
           'word_enrichment': 'selected_provider',
           'conversation_notes': 'selected_provider',
@@ -411,6 +411,8 @@ class ApiRouter {
         'model': settings.model,
         'provider': settings.provider.apiValue,
         'codex_model': settings.codexModel,
+        'auto_return_to_codex': settings.autoReturnToCodex,
+        'codex_resume_at': settings.codexResumeAt?.toIso8601String(),
       });
     });
 
@@ -423,14 +425,24 @@ class ApiRouter {
       if (unauthorized != null) return unauthorized;
       final payload = await _readJson(request);
       try {
+        final current = await db.aiSettings(id);
+        final autoReturn = payload.containsKey('auto_return_to_codex')
+            ? payload['auto_return_to_codex'] == true
+            : current.autoReturnToCodex;
+        final requestedProvider = AiProvider.fromApiValue(payload['provider']);
         await db.saveAiSettings(
           id,
           AiConnectionSettings(
             enabled: payload['enabled'] == true,
             apiKey: (payload['api_key'] as String? ?? '').trim(),
             model: (payload['model'] as String? ?? '').trim(),
-            provider: AiProvider.fromApiValue(payload['provider']),
+            provider: requestedProvider,
             codexModel: (payload['codex_model'] as String? ?? '').trim(),
+            autoReturnToCodex: autoReturn,
+            codexResumeAt:
+                autoReturn && requestedProvider == AiProvider.deepSeek
+                ? current.codexResumeAt
+                : null,
           ),
           clearApiKey: payload['clear_api_key'] == true,
         );
@@ -1597,7 +1609,24 @@ $transcript''',
     }
     final user = await db.userForId(userId);
     if (user == null) throw StateError('用户不存在。');
-    return gateway.completeText(user, settings: settings, prompt: prompt);
+    try {
+      return await gateway.completeText(
+        user,
+        settings: settings,
+        prompt: prompt,
+      );
+    } catch (error) {
+      if (!settings.autoReturnToCodex ||
+          !settings.ready ||
+          !ServerCodexGateway.isQuotaFailure(error)) {
+        rethrow;
+      }
+      await gateway.scheduleReturnAfterQuotaReset(user);
+      return aiService.completeText(
+        settings: settings.copyWith(provider: AiProvider.deepSeek),
+        prompt: prompt,
+      );
+    }
   }
 
   String _stringOr(Object? value, String fallback) {

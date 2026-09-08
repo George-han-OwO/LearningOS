@@ -472,8 +472,12 @@ class CodexAppServerClient {
     this.includeParentEnvironment = true,
     bool? runInShell,
     this.requestTimeout = const Duration(seconds: 30),
-    this._transport,
-  }) : runInShell = runInShell ?? Platform.isWindows;
+    CodexJsonlTransport? transport,
+  }) : runInShell = runInShell ?? Platform.isWindows,
+       // A public test seam is intentionally translated into the private
+       // mutable transport used by the lifecycle methods below.
+       // ignore: prefer_initializing_formals
+       _transport = transport;
 
   /// Executable name or absolute path used by [start] when no transport was
   /// injected. On Windows this can be `codex.exe` or a trusted `codex.cmd`.
@@ -716,7 +720,21 @@ class CodexAppServerClient {
     final params = <String, Object?>{
       'limit': limit.clamp(1, 100),
       'sortKey': 'updated_at',
-      'sourceKinds': const <String>[],
+      // Empty/omitted sourceKinds only returns CLI and VS Code history.
+      // LearningOS must also see Codex desktop/App Server and child-agent
+      // conversations before the gateway applies its exact OSS cwd filter.
+      'sourceKinds': const <String>[
+        'cli',
+        'vscode',
+        'exec',
+        'appServer',
+        'subAgent',
+        'subAgentReview',
+        'subAgentCompact',
+        'subAgentThreadSpawn',
+        'subAgentOther',
+        'unknown',
+      ],
       if (cursor?.trim() case final String cursorValue
           when cursorValue.isNotEmpty)
         'cursor': cursorValue,

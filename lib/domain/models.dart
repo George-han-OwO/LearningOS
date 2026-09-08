@@ -99,6 +99,8 @@ class AiConnectionSettings {
     this.apiKeyConfigured = false,
     this.apiKeyHint,
     this.serverEncryptionReady = false,
+    this.autoReturnToCodex = false,
+    this.codexResumeAt,
   });
 
   static const defaultModel = 'deepseek-v4-flash';
@@ -155,6 +157,8 @@ class AiConnectionSettings {
   final bool apiKeyConfigured;
   final String? apiKeyHint;
   final bool serverEncryptionReady;
+  final bool autoReturnToCodex;
+  final DateTime? codexResumeAt;
 
   /// True when the server can run DeepSeek jobs. The secret itself is never
   /// returned to this client after it has been saved.
@@ -176,6 +180,8 @@ class AiConnectionSettings {
     bool? apiKeyConfigured,
     String? apiKeyHint,
     bool? serverEncryptionReady,
+    bool? autoReturnToCodex,
+    DateTime? codexResumeAt,
   }) {
     return AiConnectionSettings(
       enabled: enabled ?? this.enabled,
@@ -187,6 +193,8 @@ class AiConnectionSettings {
       apiKeyHint: apiKeyHint ?? this.apiKeyHint,
       serverEncryptionReady:
           serverEncryptionReady ?? this.serverEncryptionReady,
+      autoReturnToCodex: autoReturnToCodex ?? this.autoReturnToCodex,
+      codexResumeAt: codexResumeAt ?? this.codexResumeAt,
     );
   }
 }

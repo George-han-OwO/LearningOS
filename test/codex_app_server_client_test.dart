@@ -55,6 +55,10 @@ void main() {
       );
 
       expect(page.threads.single.cwd, r'C:\Users\George\Documents\OSS');
+      expect(
+        transport.lastThreadListParams?['sourceKinds'],
+        contains('appServer'),
+      );
       expect(conversation.isComplete, isTrue);
       expect(conversation.turnCount, 1);
       expect(conversation.transcript, contains('User:\nExplain entropy.'));
@@ -114,6 +118,7 @@ void main() {
 class _FakeCodexTransport implements CodexJsonlTransport {
   final StreamController<String> _lines = StreamController<String>();
   final Completer<void> _done = Completer<void>();
+  Map<String, dynamic>? lastThreadListParams;
 
   @override
   Stream<String> get lines => _lines.stream;
@@ -127,6 +132,11 @@ class _FakeCodexTransport implements CodexJsonlTransport {
     final id = request['id'];
     if (id == null) return;
     final method = request['method'];
+    if (method == 'thread/list') {
+      lastThreadListParams = Map<String, dynamic>.from(
+        request['params'] as Map,
+      );
+    }
     final Object result = switch (method) {
       'initialize' => <String, Object?>{},
       'account/rateLimits/read' => {

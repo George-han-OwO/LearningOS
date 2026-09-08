@@ -78,12 +78,31 @@ class PendingWordEnrichmentProcessor {
       }
 
       final pendingWords = await db.pendingWordsForUser(userId, limit: 20);
-      final report = settings.usesCodex
-          ? await _enrichWithCodex(userId, settings, pendingWords)
-          : await aiService.enrichWords(
-              settings: settings,
-              words: pendingWords,
-            );
+      AiEnrichmentReport report;
+      if (settings.usesCodex) {
+        try {
+          report = await _enrichWithCodex(userId, settings, pendingWords);
+        } catch (error) {
+          if (!settings.autoReturnToCodex ||
+              !settings.ready ||
+              !ServerCodexGateway.isQuotaFailure(error)) {
+            rethrow;
+          }
+          final user = await db.userForId(userId);
+          final gateway = codexGateway;
+          if (user == null || gateway == null) rethrow;
+          await gateway.scheduleReturnAfterQuotaReset(user);
+          report = await aiService.enrichWords(
+            settings: settings.copyWith(provider: AiProvider.deepSeek),
+            words: pendingWords,
+          );
+        }
+      } else {
+        report = await aiService.enrichWords(
+          settings: settings,
+          words: pendingWords,
+        );
+      }
       if (report.enrichedCount > 0) {
         await db.updateWordEnrichments(userId: userId, words: report.words);
       }

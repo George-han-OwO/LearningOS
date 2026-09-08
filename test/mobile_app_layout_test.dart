@@ -1,8 +1,10 @@
 import 'package:ai_study_os/core/app_controller.dart';
 import 'package:ai_study_os/core/app_scope.dart';
+import 'package:ai_study_os/core/codex/chatgpt_auth_service.dart';
 import 'package:ai_study_os/core/security/password_hasher.dart';
 import 'package:ai_study_os/data/app_database.dart';
 import 'package:ai_study_os/design/app_theme.dart';
+import 'package:ai_study_os/domain/canvas_todo.dart';
 import 'package:ai_study_os/domain/models.dart';
 import 'package:ai_study_os/features/shell/app_shell.dart';
 import 'package:flutter/cupertino.dart';
@@ -41,6 +43,7 @@ void main() {
     expect(find.text('今日待办'), findsOneWidget);
     expect(find.text('已完成'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Submit statistics project'), findsOneWidget);
 
     await tester.tap(find.text('单词'));
     await tester.pumpAndSettle();
@@ -85,13 +88,40 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('DeepSeek'), findsWidgets);
     expect(find.text('ChatGPT-Codex'), findsWidgets);
-    expect(find.textContaining('Canvas'), findsNothing);
+    expect(find.text('Canvas LMS'), findsOneWidget);
+    expect(find.text('AI 用量 / 剩余额度'), findsOneWidget);
     if (_writePreviews) {
       await expectLater(
         find.byType(AppShell),
         matchesGoldenFile('goldens/mobile_profile.png'),
       );
     }
+  });
+
+  testWidgets('desktop uses a three-column social feed layout', (tester) async {
+    tester.view.physicalSize = const Size(1440, 960);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = _PreviewController(await AppDatabase.open());
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      AppScope(
+        controller: controller,
+        child: CupertinoApp(
+          theme: buildCupertinoTheme(),
+          home: const AppShell(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Georgehan'), findsWidgets);
+    expect(find.text('Canvas'), findsOneWidget);
+    expect(find.text('剩余 62%'), findsOneWidget);
+    expect(find.text('剩余 70%'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
 
@@ -166,6 +196,51 @@ class _PreviewController extends AppController {
 
   @override
   String get activeAiProviderLabel => 'DeepSeek API';
+
+  @override
+  CanvasTodoState get canvasTodoState => CanvasTodoState(
+    connected: true,
+    loading: false,
+    profileName: 'Georgehan',
+    refreshedAt: _now,
+    items: [
+      CanvasTodoItem(
+        id: 'canvas-1',
+        courseName: 'AP Statistics',
+        title: 'Submit statistics project',
+        dueAt: _now.add(const Duration(hours: 6)),
+        completed: false,
+        statusLabel: '未提交',
+      ),
+      CanvasTodoItem(
+        id: 'canvas-2',
+        courseName: 'Calculus',
+        title: 'Limits quiz',
+        submittedAt: _now.subtract(const Duration(hours: 2)),
+        completed: true,
+        statusLabel: '已评分 · 得分 90',
+      ),
+    ],
+  );
+
+  @override
+  ChatGptAuthState get chatGptAuth => const ChatGptAuthState(
+    available: true,
+    authenticated: true,
+    planType: 'plus',
+  );
+
+  @override
+  ChatGptCodexQuotaState get codexQuota => ChatGptCodexQuotaState(
+    available: true,
+    planType: 'plus',
+    primaryUsedPercent: 38,
+    primaryWindowMinutes: 300,
+    primaryResetsAt: _now.add(const Duration(hours: 2)),
+    secondaryUsedPercent: 30,
+    secondaryWindowMinutes: 10080,
+    secondaryResetsAt: _now.add(const Duration(days: 3)),
+  );
 
   @override
   String get activeAiModel => 'deepseek-v4-flash';

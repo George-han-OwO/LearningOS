@@ -2,7 +2,7 @@
 
 这是 AILearningOS 的服务端，负责账号隔离的 Codex/DeepSeek AI 请求、词库、学习笔记、飞书录音回调，以及 Obsidian vault 写入。
 
-v3.9 修复 ChatGPT 授权后一直 pending：官方 `account/read` 状态确认、失效子进程重建、持久化登录请求、原 LearningOS 账号事务绑定及可重试完成接口。连接不会自动切换 AI 来源。部署、旧登录目录处理与验收见 [Codex登录修复-v3.9.md](Codex登录修复-v3.9.md)。
+v4.0 在 v3.9 登录恢复基础上补齐 Canvas 首页待办、Codex OSS 会话来源读取，并加入用户显式开启的五小时额度自动回切：Codex 额度用尽时临时使用 DeepSeek，到 App Server 返回的 `resetsAt` 后由服务器确认额度恢复再切回 Codex。部署与验收见 [部署与验收-v4.0.md](部署与验收-v4.0.md)。
 
 v3.8 新增 Canvas LMS 本人账号的只读连接、在读课程和作业 API，令牌按账号加密保存。部署、接口与限制见 [Canvas接入.md](Canvas接入.md)。Canvas 不依赖 Codex CLI；先使用 Canvas 的服务器可通过 `start-server.ps1 -DisableCodex` 启动。
 

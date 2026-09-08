@@ -91,6 +91,8 @@ class AiConnectionSettings {
     required this.model,
     this.provider = AiProvider.deepSeek,
     this.codexModel = defaultCodexModel,
+    this.autoReturnToCodex = false,
+    this.codexResumeAt,
   });
 
   static const defaultModel = 'deepseek-v4-flash';
@@ -142,6 +144,8 @@ class AiConnectionSettings {
   final String model;
   final AiProvider provider;
   final String codexModel;
+  final bool autoReturnToCodex;
+  final DateTime? codexResumeAt;
 
   bool get ready => enabled && apiKey.trim().isNotEmpty;
   bool get usesCodex => provider == AiProvider.codex;
@@ -153,6 +157,8 @@ class AiConnectionSettings {
     String? model,
     AiProvider? provider,
     String? codexModel,
+    bool? autoReturnToCodex,
+    DateTime? codexResumeAt,
   }) {
     return AiConnectionSettings(
       enabled: enabled ?? this.enabled,
@@ -160,6 +166,8 @@ class AiConnectionSettings {
       model: model ?? this.model,
       provider: provider ?? this.provider,
       codexModel: codexModel ?? this.codexModel,
+      autoReturnToCodex: autoReturnToCodex ?? this.autoReturnToCodex,
+      codexResumeAt: codexResumeAt ?? this.codexResumeAt,
     );
   }
 }

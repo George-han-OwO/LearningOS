@@ -1,14 +1,15 @@
 # AILearningOS
 
-AILearningOS 是一个聚焦“单词 + Learning Journal”的学习工具。Android 和 Windows 客户端只保留三个主界面：主页、单词、学习笔记；`Settings` 从主页底部进入。
+AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工具。Android 和 Windows 客户端保留主页、单词、学习笔记三个主入口，并从头像或侧栏进入 `Settings`。桌面端采用简洁的三栏信息流布局，移动端采用底部导航。
 
 ## 当前产品范围
 
 ### 主页
 
-- `今日待办`：到期单词和今日 Learning Journal。
-- `已完成`：今日单词复习次数和今日 Learning Journal 数量。
-- `Settings`：账号、DeepSeek 和 ChatGPT-Codex 连接与切换。
+- `今日待办`：Canvas 未提交作业、截止时间、到期单词和今日 Learning Journal。
+- `已完成`：Canvas 已提交/已评分作业、今日单词复习次数和 Journal 数量。
+- 头像与桌面右栏：当前账号、所选 AI、Codex 剩余额度和 Canvas 状态。
+- `Settings`：账号、Canvas、DeepSeek、ChatGPT-Codex、额度与自动回切。
 
 ### 单词
 
@@ -25,12 +26,27 @@ AILearningOS 是一个聚焦“单词 + Learning Journal”的学习工具。And
 
 ## AI 双路由
 
-`Settings > AI 模型源` 是账号级的手动开关，可在下列两条路线中选择一条：
+`Settings > AI 模型源` 是账号级开关，可在下列两条路线中选择一条：
 
 1. `DeepSeek`：使用后端保存的 DeepSeek API Key 和模型。
 2. `ChatGPT-Codex`：手机向 AILearningOS 后端发起官方设备码登录，由后端按 LearningOS 账号保存隔离登录态，并在服务器上调用 Codex 消耗该 ChatGPT 账号的 Codex 额度。
 
-单词 AI 导入和 Learning Journal AI 分析只使用当前手动选中的路线。登录失效、Key 无效、模型不可用或额度耗尽时会明确报错，不会暗中切到另一条路线。
+默认情况下，单词 AI 导入和 Learning Journal AI 分析只使用手动选中的路线。用户可显式开启“额度恢复后自动切回 Codex”：只有 Codex 返回额度/usage limit/429，且该用户已配置 DeepSeek 时，后端才临时走 DeepSeek；到官方 `resetsAt` 后，后端确认五小时窗口已有剩余额度再自动切回 Codex。登录、网络或模型错误不会触发切换。
+
+这不是多账号号池：一个 LearningOS 用户只绑定自己的一个 ChatGPT-Codex 隔离登录态，不轮换其他人的账号或额度。
+
+## Canvas 信息源
+
+- Canvas 连接在 `Settings > 信息源` 管理，课程与作业由后端只读获取。
+- 作业按 submission 状态进入主页待办或已完成；支持截止时间、逾期/缺交、迟交与得分状态。
+- Canvas access token 只在后端按 LearningOS 账号加密保存，不写入客户端或仓库。
+
+## Codex OSS 会话
+
+- 后端使用[官方 Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)中的 `thread/list` 与 `thread/turns/list` 读取历史，并显式包含 `appServer` 等来源，避免只依赖默认 `cli`/`vscode` 来源而漏会话。
+- 仅处理工作目录最后一级名为 `OSS` 的会话；只同步用户与助手文本，排除 reasoning、命令和工具输出。
+- 后端每两秒做增量检查并写入该 LearningOS 用户的会话收件箱与 Obsidian 原始记录。
+- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.0 后，用真实已登录账号完成线上历史接口验收。
 
 ## 系统边界
 
@@ -50,7 +66,7 @@ Claw = 独立的 AI 部署/更新机器人
 
 - Codex 不在手机上运行；手机只调用后端提供的 Codex 能力。
 - Claw 不是后端，不参与登录、AI 请求路由或额度消耗。它只能在被授权时协助更新服务器文件。
-- Canvas、邮件、飞书、课程、采集、自动对话同步和 Obsidian 等旧界面已从当前客户端功能范围移除。后端的旧接口和数据表暂时保留，用于升级兼容，不等于当前 App 仍会启动这些功能。
+- Canvas 已作为主页待办信息源重新接入。邮件、飞书、课程、采集等旧界面仍不在当前精简客户端主流程中；后端旧接口和数据表暂时保留用于升级兼容。
 - 客户端不再启动旧的邮件/对话自动采集定时器；AI 分析由用户手动触发。
 
 ## 运行与验证
@@ -79,12 +95,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android 精简版：`release/AILearningOS-android-v1.4.0.apk`（SHA-256 `7DCB5A49E3D031E495D4E689E2F0092AB0C9BEE6AFF71878C4361A1A682B9281`，48,380,040 bytes）
-- Windows 后端：`release/AILearningOS-server-windows-x64-v3.9.zip`
-- 后端源码：`release/AILearningOS-server-source-v3.9.zip`
-- v3.9 登录修复部署与验收：[server/Codex登录修复-v3.9.md](server/Codex登录修复-v3.9.md)
+- Android：`release/AILearningOS-android-v1.5.0.apk`
+- Windows 后端：`release/AILearningOS-server-windows-x64-v4.0.zip`
+- 后端源码：`release/AILearningOS-server-source-v4.0.zip`
+- v4.0 部署与验收：[server/部署与验收-v4.0.md](server/部署与验收-v4.0.md)
 
-客户端界面精简不需要更换 v3.9 后端；ChatGPT-Codex 设备码登录仍由部署在另一台电脑上的 AILearningOS 后端完成。
+Canvas 首页待办、OSS 来源修复和五小时额度自动回切需要同时更新 v1.5.0 客户端与另一台电脑上的 v4.0 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 

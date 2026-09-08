@@ -780,7 +780,18 @@ class CodexAppServerClient {
     final params = <String, Object?>{
       'limit': limit.clamp(1, 100),
       'sortKey': 'updated_at',
-      'sourceKinds': const <String>[],
+      'sourceKinds': const <String>[
+        'cli',
+        'vscode',
+        'exec',
+        'appServer',
+        'subAgent',
+        'subAgentReview',
+        'subAgentCompact',
+        'subAgentThreadSpawn',
+        'subAgentOther',
+        'unknown',
+      ],
     };
     final normalizedCursor = cursor?.trim();
     if (normalizedCursor != null && normalizedCursor.isNotEmpty) {

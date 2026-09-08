@@ -74,7 +74,7 @@ void main() {
       final payload = jsonDecode(response.body) as Map<String, dynamic>;
       expect(
         payload['ai_provider_switch'],
-        'persistent-strict-no-silent-fallback',
+        'manual-or-explicit-codex-quota-auto-return',
       );
       expect(payload['codex_gateway_enabled'], isTrue);
       expect(payload['ai_features'], {
@@ -291,6 +291,51 @@ void main() {
     recordingCodex.failCompletion = false;
     expect(failedCodexResponse.statusCode, isNot(200));
     expect(recordingDeepSeek.completedPrompts, ['route-deepseek']);
+
+    await database.saveAiSettings(
+      user.id,
+      const AiConnectionSettings(
+        enabled: true,
+        apiKey: '',
+        model: AiConnectionSettings.defaultModel,
+        provider: AiProvider.codex,
+        autoReturnToCodex: true,
+      ),
+    );
+    recordingCodex.failCompletion = true;
+    recordingCodex.quotaFailure = true;
+    final fallbackResponse = await http.post(
+      Uri.parse('$host/api/users/${user.id}/ai/chat'),
+      headers: headers,
+      body: jsonEncode({'prompt': 'quota-fallback'}),
+    );
+    recordingCodex.failCompletion = false;
+    recordingCodex.quotaFailure = false;
+    expect(fallbackResponse.statusCode, 200);
+    expect(
+      jsonDecode(fallbackResponse.body)['result'],
+      'deepseek:quota-fallback',
+    );
+    final fallbackSettings = await database.aiSettings(user.id);
+    expect(fallbackSettings.provider, AiProvider.deepSeek);
+    expect(fallbackSettings.codexResumeAt, isNotNull);
+
+    final manualReturnResponse = await http.post(
+      Uri.parse('$host/api/users/${user.id}/settings/ai'),
+      headers: headers,
+      body: jsonEncode({
+        'enabled': true,
+        'api_key': '',
+        'model': AiConnectionSettings.defaultModel,
+        'provider': 'codex',
+        'codex_model': AiConnectionSettings.defaultCodexModel,
+        'auto_return_to_codex': true,
+      }),
+    );
+    expect(manualReturnResponse.statusCode, 200);
+    final manualSettings = await database.aiSettings(user.id);
+    expect(manualSettings.provider, AiProvider.codex);
+    expect(manualSettings.codexResumeAt, isNull);
   });
 
   test(
@@ -628,10 +673,13 @@ class _RecordingDeepSeekService extends DeepSeekService {
 }
 
 class _RecordingCodexGateway extends ServerCodexGateway {
-  _RecordingCodexGateway(super.database);
+  _RecordingCodexGateway(this.database) : super(database);
+
+  final AppDatabase database;
 
   final List<String> completedPrompts = [];
   bool failCompletion = false;
+  bool quotaFailure = false;
 
   @override
   bool get enabled => true;
@@ -643,7 +691,18 @@ class _RecordingCodexGateway extends ServerCodexGateway {
     required String prompt,
   }) async {
     completedPrompts.add(prompt);
-    if (failCompletion) throw StateError('Codex test failure');
+    if (failCompletion) {
+      throw StateError(
+        quotaFailure ? 'Codex quota exhausted (429)' : 'Codex test failure',
+      );
+    }
     return 'codex:$prompt';
+  }
+
+  @override
+  Future<DateTime> scheduleReturnAfterQuotaReset(AppUser user) async {
+    final resumeAt = DateTime.now().toUtc().add(const Duration(hours: 5));
+    await database.scheduleCodexReturn(user.id, resumeAt);
+    return resumeAt;
   }
 }

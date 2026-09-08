@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 
+import '../../core/app_scope.dart';
 import '../../design/app_theme.dart';
 import '../../design/app_widgets.dart';
 import '../notes/learning_journal_page.dart';
@@ -45,21 +46,36 @@ class _AppShellState extends State<AppShell> {
   }
 
   Widget _buildDesktop(BuildContext context) {
+    final showRightRail = MediaQuery.sizeOf(context).width >= 1180;
     return CupertinoPageScaffold(
       child: Row(
         children: [
           _DesktopSidebar(selected: _selected, onSelected: _select),
           Expanded(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 220),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              child: KeyedSubtree(
-                key: ValueKey(_selected),
-                child: _page(_selected),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border(
+                  right: BorderSide(
+                    color: AppPalette.resolve(context, AppPalette.separator),
+                    width: 0.6,
+                  ),
+                ),
+              ),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: KeyedSubtree(
+                  key: ValueKey(_selected),
+                  child: _page(_selected),
+                ),
               ),
             ),
           ),
+          if (showRightRail)
+            _DesktopRightRail(
+              onOpenSettings: () => _select(AppDestination.settings),
+            ),
         ],
       ),
     );
@@ -168,7 +184,7 @@ class _DesktopSidebar extends StatelessWidget {
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
         child: Container(
-          width: 224,
+          width: 248,
           decoration: BoxDecoration(
             color: const Color(0xB30B0B0E),
             gradient: const LinearGradient(
@@ -212,11 +228,15 @@ class _DesktopSidebar extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 10),
-                        const Text(
-                          'AILearningOS',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
+                        const Expanded(
+                          child: Text(
+                            'AILearningOS',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ],
@@ -268,8 +288,8 @@ class _SidebarItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: CupertinoButton(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-        minimumSize: const Size(42, 42),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        minimumSize: const Size(46, 46),
         pressedOpacity: 0.68,
         borderRadius: BorderRadius.circular(11),
         color: selected ? const Color(0x26FFFFFF) : null,
@@ -278,7 +298,7 @@ class _SidebarItem extends StatelessWidget {
           children: [
             Icon(
               icon,
-              size: 18,
+              size: 22,
               color: selected
                   ? AppPalette.resolve(context, AppPalette.blue)
                   : AppPalette.resolve(context, AppPalette.secondaryText),
@@ -288,13 +308,237 @@ class _SidebarItem extends StatelessWidget {
               label,
               style: TextStyle(
                 color: AppPalette.resolve(context, AppPalette.text),
-                fontSize: 14,
+                fontSize: 17,
                 fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _DesktopRightRail extends StatelessWidget {
+  const _DesktopRightRail({required this.onOpenSettings});
+
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppScope.of(context);
+    final user = controller.currentUser!;
+    final canvas = controller.canvasTodoState;
+    final quota = controller.codexQuota;
+    return Container(
+      width: 320,
+      color: const Color(0xFF000000),
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+          children: [
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: onOpenSettings,
+              child: AppCard(
+                padding: const EdgeInsets.all(15),
+                child: Row(
+                  children: [
+                    _AccountAvatar(name: user.displayName, size: 48),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            user.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.sectionTitle,
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            user.email,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.caption,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            _RailCard(
+              title: 'AI',
+              icon: CupertinoIcons.sparkles,
+              trailing: controller.activeAiProviderLabel,
+              child: controller.chatGptAuth.authenticated && quota.available
+                  ? Column(
+                      children: [
+                        _RailQuota(
+                          label: '短周期',
+                          remaining: quota.primaryRemainingPercent,
+                        ),
+                        const SizedBox(height: 10),
+                        _RailQuota(
+                          label: '长周期',
+                          remaining: quota.secondaryRemainingPercent,
+                        ),
+                      ],
+                    )
+                  : Text(
+                      controller.chatGptAuth.authenticated
+                          ? (quota.message ?? '点击 Settings 刷新 Codex 额度')
+                          : 'DeepSeek 与 ChatGPT-Codex 可手动切换',
+                      style: AppTextStyles.caption,
+                    ),
+            ),
+            const SizedBox(height: 14),
+            _RailCard(
+              title: 'Canvas',
+              icon: CupertinoIcons.calendar,
+              trailing: canvas.connected ? '已连接' : '未连接',
+              child: Text(
+                canvas.connected
+                    ? '${canvas.pending.length} 项待办 · ${canvas.completed.length} 项已完成'
+                    : '连接后作业会进入主页信息流',
+                style: AppTextStyles.caption,
+              ),
+            ),
+            const SizedBox(height: 14),
+            CupertinoButton.filled(
+              borderRadius: BorderRadius.circular(22),
+              onPressed: onOpenSettings,
+              child: const Text('Settings'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AccountAvatar extends StatelessWidget {
+  const _AccountAvatar({required this.name, required this.size});
+
+  final String name;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = name.trim();
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppPalette.resolve(context, AppPalette.blue),
+            AppPalette.resolve(context, AppPalette.purple),
+          ],
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        trimmed.isEmpty ? '?' : trimmed.substring(0, 1).toUpperCase(),
+        style: TextStyle(
+          color: const Color(0xFFFFFFFF),
+          fontSize: size * 0.42,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _RailCard extends StatelessWidget {
+  const _RailCard({
+    required this.title,
+    required this.icon,
+    required this.trailing,
+    required this.child,
+  });
+
+  final String title;
+  final IconData icon;
+  final String trailing;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => AppCard(
+    padding: const EdgeInsets.all(15),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(
+              icon,
+              size: 17,
+              color: AppPalette.resolve(context, AppPalette.blue),
+            ),
+            const SizedBox(width: 7),
+            Text(title, style: AppTextStyles.sectionTitle),
+            const Spacer(),
+            Flexible(
+              child: Text(
+                trailing,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.caption,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        child,
+      ],
+    ),
+  );
+}
+
+class _RailQuota extends StatelessWidget {
+  const _RailQuota({required this.label, required this.remaining});
+
+  final String label;
+  final double? remaining;
+
+  @override
+  Widget build(BuildContext context) {
+    final fraction = ((remaining ?? 0) / 100).clamp(0.0, 1.0);
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(label, style: AppTextStyles.caption)),
+            Text(
+              remaining == null ? '--' : '剩余 ${remaining!.toStringAsFixed(0)}%',
+              style: AppTextStyles.caption,
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            height: 6,
+            color: AppPalette.resolve(context, AppPalette.softSurface),
+            alignment: Alignment.centerLeft,
+            child: FractionallySizedBox(
+              widthFactor: fraction,
+              child: ColoredBox(
+                color: AppPalette.resolve(context, AppPalette.blue),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
