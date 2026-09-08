@@ -2,11 +2,11 @@
 
 ## 当前版本
 
-- Android：`AILearningOS-android-v1.5.2.apk`
+- Android：`AILearningOS-android-v1.5.3.apk`
 - 应用显示名：`AILearningOS`
 - Android 包名：`com.georgegao.ai_study_os`（为覆盖旧版安装而保留）
-- 版本：`1.5.2`，versionCode `19`
-- 构建产物及 SHA-256：由 `v1.5.2` GitHub Release 的 `SHA256SUMS.txt` 给出
+- 版本：`1.5.3`，versionCode `20`
+- 构建产物及 SHA-256：由 `v1.5.3` GitHub Release 的 `SHA256SUMS.txt` 给出
 - 最新后端：`AILearningOS-server-windows-x64-v4.0.zip`
 - 后端源码：`AILearningOS-server-source-v4.0.zip`
 - ChatGPT 登录：保留 v3.9 的 durable binding 与恢复机制；每个 LearningOS 用户仍只有自己的隔离 Codex 登录态

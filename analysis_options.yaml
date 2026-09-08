@@ -11,6 +11,9 @@ include: package:flutter_lints/flutter.yaml
 
 analyzer:
   exclude:
+    # The backend is an independent Dart package with its own pubspec and CI
+    # analysis job. A clean Flutter checkout has not resolved those packages.
+    - server/**
     - release/AILearningOS-server-source-*/**
     - release/AILearningOS-server-windows-*/**
 
