@@ -95,12 +95,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android：`release/AILearningOS-android-v1.5.1.apk`
+- Android：`release/AILearningOS-android-v1.5.2.apk`
 - Windows 后端：`release/AILearningOS-server-windows-x64-v4.0.zip`
 - 后端源码：`release/AILearningOS-server-source-v4.0.zip`
 - v4.0 部署与验收：[server/部署与验收-v4.0.md](server/部署与验收-v4.0.md)
 
-Canvas 首页待办、OSS 来源修复和五小时额度自动回切需要同时更新 v1.5.1 客户端与另一台电脑上的 v4.0 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
+Canvas 首页待办、OSS 来源修复和五小时额度自动回切需要同时更新 v1.5.2 客户端与另一台电脑上的 v4.0 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 
