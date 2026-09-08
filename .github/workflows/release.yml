@@ -3,7 +3,7 @@ name: Build release packages
 on:
   push:
     tags:
-      - 'v1.5.3'
+      - 'v1.5.4'
 
 permissions:
   contents: write
@@ -72,30 +72,30 @@ jobs:
           dart pub get
           dart analyze
           dart test
-          dart build cli -o build-v4.0
+          dart build cli -o build-v4.1
 
       - name: Package backend
         shell: pwsh
         run: |
-          $binary = 'release\AILearningOS-server-windows-x64-v4.0'
-          $source = 'release\AILearningOS-server-source-v4.0'
+          $binary = 'release\AILearningOS-server-windows-x64-v4.1'
+          $source = 'release\AILearningOS-server-source-v4.1'
           New-Item -ItemType Directory -Path "$binary\bin", "$binary\lib", $source -Force | Out-Null
-          Copy-Item server\build-v4.0\bundle\bin\server.exe "$binary\bin\server.exe"
-          Copy-Item server\build-v4.0\bundle\lib\sqlite3.dll "$binary\lib\sqlite3.dll"
-          Copy-Item server\build-v4.0\bundle\lib\sqlite3.dll "$binary\bin\sqlite3.dll"
+          Copy-Item server\build-v4.1\bundle\bin\server.exe "$binary\bin\server.exe"
+          Copy-Item server\build-v4.1\bundle\lib\sqlite3.dll "$binary\lib\sqlite3.dll"
+          Copy-Item server\build-v4.1\bundle\lib\sqlite3.dll "$binary\bin\sqlite3.dll"
           Copy-Item server\start-server.ps1 "$binary\start-server.ps1"
-          Copy-Item server\部署与验收-v4.0.md "$binary\部署指南.md"
+          Copy-Item server\部署与验收-v4.1.md "$binary\部署指南.md"
           Copy-Item server\bin,server\lib,server\test -Destination $source -Recurse
-          Copy-Item server\analysis_options.yaml,server\pubspec.yaml,server\pubspec.lock,server\README.md,server\Canvas接入.md,server\部署与验收-v4.0.md,server\start-server.ps1 -Destination $source
-          Compress-Archive -LiteralPath $binary -DestinationPath release\AILearningOS-server-windows-x64-v4.0.zip -CompressionLevel Optimal
-          Compress-Archive -LiteralPath $source -DestinationPath release\AILearningOS-server-source-v4.0.zip -CompressionLevel Optimal
+          Copy-Item server\analysis_options.yaml,server\pubspec.yaml,server\pubspec.lock,server\README.md,server\Canvas接入.md,server\部署与验收-v4.1.md,server\start-server.ps1 -Destination $source
+          Compress-Archive -LiteralPath $binary -DestinationPath release\AILearningOS-server-windows-x64-v4.1.zip -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $source -DestinationPath release\AILearningOS-server-source-v4.1.zip -CompressionLevel Optimal
 
       - uses: actions/upload-artifact@v4
         with:
           name: backend-release
           path: |
-            release/AILearningOS-server-windows-x64-v4.0.zip
-            release/AILearningOS-server-source-v4.0.zip
+            release/AILearningOS-server-windows-x64-v4.1.zip
+            release/AILearningOS-server-source-v4.1.zip
           if-no-files-found: error
 
   release:
@@ -114,17 +114,17 @@ jobs:
 
       - name: Prepare checksummed release assets
         run: |
-          mv release/android/app-release.apk release/AILearningOS-android-v1.5.3.apk
+          mv release/android/app-release.apk release/AILearningOS-android-v1.5.4.apk
           mv release/backend/*.zip release/
           cd release
-          sha256sum AILearningOS-android-v1.5.3.apk AILearningOS-server-windows-x64-v4.0.zip AILearningOS-server-source-v4.0.zip > SHA256SUMS.txt
+          sha256sum AILearningOS-android-v1.5.4.apk AILearningOS-server-windows-x64-v4.1.zip AILearningOS-server-source-v4.1.zip > SHA256SUMS.txt
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            release/AILearningOS-android-v1.5.3.apk
-            release/AILearningOS-server-windows-x64-v4.0.zip
-            release/AILearningOS-server-source-v4.0.zip
+            release/AILearningOS-android-v1.5.4.apk
+            release/AILearningOS-server-windows-x64-v4.1.zip
+            release/AILearningOS-server-source-v4.1.zip
             release/SHA256SUMS.txt

@@ -86,33 +86,31 @@ class _AppShellState extends State<AppShell> {
       AppDestination.home,
       AppDestination.words,
       AppDestination.journal,
+      AppDestination.settings,
     ];
-    final mobileSelected = destinations.contains(_selected)
-        ? _selected
-        : AppDestination.home;
-    final index = destinations.indexOf(mobileSelected);
+    final index = destinations.indexOf(_selected);
     final mainPages = <Widget>[
       TodayPage(onNavigate: _select),
       const WordBankPage(),
       const LearningJournalPage(),
+      const SettingsPage(),
     ];
 
     return CupertinoPageScaffold(
       child: Column(
         children: [
           Expanded(
-            child: _selected == AppDestination.settings
-                ? const SettingsPage()
-                : IndexedStack(index: index, children: mainPages),
+            child: IndexedStack(index: index, children: mainPages),
           ),
           ColoredBox(
             color: const Color(0xFF000000),
             child: SafeArea(
               top: false,
-              minimum: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              minimum: const EdgeInsets.fromLTRB(0, 8, 0, 8),
               child: LiquidGlassSurface(
+                key: const ValueKey('mobile-bottom-bar-surface'),
                 padding: EdgeInsets.zero,
-                radius: 30,
+                radius: 0,
                 blur: 30,
                 child: CupertinoTabBar(
                   currentIndex: index,
@@ -128,17 +126,22 @@ class _AppShellState extends State<AppShell> {
                     BottomNavigationBarItem(
                       icon: Icon(CupertinoIcons.calendar),
                       activeIcon: Icon(CupertinoIcons.calendar_today),
-                      label: '主页',
+                      label: 'Home',
                     ),
                     BottomNavigationBarItem(
                       icon: Icon(CupertinoIcons.book),
                       activeIcon: Icon(CupertinoIcons.book_fill),
-                      label: '单词',
+                      label: 'Words',
                     ),
                     BottomNavigationBarItem(
                       icon: Icon(CupertinoIcons.doc_text),
                       activeIcon: Icon(CupertinoIcons.doc_text_fill),
-                      label: '学习笔记',
+                      label: 'Journal',
+                    ),
+                    BottomNavigationBarItem(
+                      icon: Icon(CupertinoIcons.settings),
+                      activeIcon: Icon(CupertinoIcons.settings_solid),
+                      label: 'Setting',
                     ),
                   ],
                 ),

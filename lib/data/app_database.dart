@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../domain/learning_engine.dart';
@@ -357,13 +358,17 @@ class AppDatabase {
     }
   }
 
-  Future<Map<String, dynamic>> startChatGptDeviceLogin() async => _map(
-    await _request(
-      'POST',
-      '/api/auth/chatgpt/device/start',
-      timeout: const Duration(seconds: 90),
-    ),
-  );
+  Future<Map<String, dynamic>> startChatGptDeviceLogin() async {
+    final clientInstanceId = await _sessionStore.readOrCreateClientInstanceId();
+    return _map(
+      await _request(
+        'POST',
+        '/api/auth/chatgpt/device/start',
+        body: {'client_instance_id': clientInstanceId},
+        timeout: const Duration(seconds: 90),
+      ),
+    );
+  }
 
   Future<Map<String, dynamic>> completeChatGptDeviceLogin({
     required String attemptId,
@@ -782,8 +787,11 @@ class ServerConnectionException implements Exception {
 /// credentials remain inside the server's per-account CODEX_HOME directory.
 class _ServerSessionStore {
   static const _key = 'ailo.server_session_bearer.v1';
+  static const _clientInstanceKey = 'ailo.client_instance_id.v1';
   static const _storage = FlutterSecureStorage();
   String? _memoryFallback;
+  String? _clientInstanceMemoryFallback;
+  Future<String>? _clientInstanceLoad;
 
   Future<String?> read() async {
     try {
@@ -811,5 +819,33 @@ class _ServerSessionStore {
     } catch (_) {
       // Best-effort when no platform key store is available.
     }
+  }
+
+  Future<String> readOrCreateClientInstanceId() =>
+      _clientInstanceLoad ??= _loadOrCreateClientInstanceId();
+
+  Future<String> _loadOrCreateClientInstanceId() async {
+    String? stored;
+    try {
+      stored = await _storage.read(key: _clientInstanceKey);
+    } catch (_) {
+      stored = _clientInstanceMemoryFallback;
+    }
+    final normalized = stored?.trim() ?? '';
+    if (RegExp(r'^[A-Za-z0-9_-]{32,160}$').hasMatch(normalized)) {
+      _clientInstanceMemoryFallback = normalized;
+      return normalized;
+    }
+    final random = math.Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    final created = base64UrlEncode(bytes).replaceAll('=', '');
+    _clientInstanceMemoryFallback = created;
+    try {
+      await _storage.write(key: _clientInstanceKey, value: created);
+    } catch (_) {
+      // Keep only the process-local random value when secure storage is not
+      // available, such as in pure widget tests.
+    }
+    return created;
   }
 }

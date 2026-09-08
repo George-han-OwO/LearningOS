@@ -1,6 +1,6 @@
 # AILearningOS
 
-AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工具。Android 和 Windows 客户端保留主页、单词、学习笔记三个主入口，并从头像或侧栏进入 `Settings`。桌面端采用简洁的三栏信息流布局，移动端采用底部导航。
+AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工具。移动端底栏使用 `Home / Words / Journal / Setting` 四个英文入口且不使用圆角；桌面端采用简洁的三栏信息流布局。
 
 ## 当前产品范围
 
@@ -35,6 +35,13 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 
 这不是多账号号池：一个 LearningOS 用户只绑定自己的一个 ChatGPT-Codex 隔离登录态，不轮换其他人的账号或额度。
 
+### Codex 登录防抖
+
+- 同一 LearningOS 用户已有未完成登录时再次发起登录，后端会调用官方 `account/login/cancel` 取消该用户近期全部未完成流程，并返回 HTTP `429`。
+- 随后进入 5 秒静默期；静默期内每次再次点击都会重新从该次点击计时。连续 5 秒没有新操作后，才允许创建一个新的设备码登录。
+- 限制按 LearningOS 用户隔离；尚未登录时按客户端安全存储的随机安装标识隔离。不会取消其他用户的登录，也不会退出已经完成的 Codex 登录。
+- 静默截止时间写入服务器数据库，后端重启不会绕过限制；客户端和数据库都不保存 ChatGPT OAuth token。
+
 ## Canvas 信息源
 
 - Canvas 连接在 `Settings > 信息源` 管理，课程与作业由后端只读获取。
@@ -46,7 +53,7 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 - 后端使用[官方 Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)中的 `thread/list` 与 `thread/turns/list` 读取历史，并显式包含 `appServer` 等来源，避免只依赖默认 `cli`/`vscode` 来源而漏会话。
 - 仅处理工作目录最后一级名为 `OSS` 的会话；只同步用户与助手文本，排除 reasoning、命令和工具输出。
 - 后端每两秒做增量检查并写入该 LearningOS 用户的会话收件箱与 Obsidian 原始记录。
-- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.0 后，用真实已登录账号完成线上历史接口验收。
+- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.1 后，用真实已登录账号完成线上历史接口验收。
 
 ## 系统边界
 
@@ -95,12 +102,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android：`release/AILearningOS-android-v1.5.3.apk`
-- Windows 后端：`release/AILearningOS-server-windows-x64-v4.0.zip`
-- 后端源码：`release/AILearningOS-server-source-v4.0.zip`
-- v4.0 部署与验收：[server/部署与验收-v4.0.md](server/部署与验收-v4.0.md)
+- Android：`release/AILearningOS-android-v1.5.4.apk`
+- Windows 后端：`release/AILearningOS-server-windows-x64-v4.1.zip`
+- 后端源码：`release/AILearningOS-server-source-v4.1.zip`
+- v4.1 部署与验收：[server/部署与验收-v4.1.md](server/部署与验收-v4.1.md)
 
-Canvas 首页待办、OSS 来源修复和五小时额度自动回切需要同时更新 v1.5.3 客户端与另一台电脑上的 v4.0 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
+无圆角四项英文底栏和匿名登录隔离标识需要 v1.5.4 客户端；登录防抖、Canvas 首页待办、OSS 来源修复和五小时额度自动回切需要在另一台电脑部署 v4.1 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 

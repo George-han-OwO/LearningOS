@@ -2,7 +2,7 @@
 
 这是 AILearningOS 的服务端，负责账号隔离的 Codex/DeepSeek AI 请求、词库、学习笔记、飞书录音回调，以及 Obsidian vault 写入。
 
-v4.0 在 v3.9 登录恢复基础上补齐 Canvas 首页待办、Codex OSS 会话来源读取，并加入用户显式开启的五小时额度自动回切：Codex 额度用尽时临时使用 DeepSeek，到 App Server 返回的 `resetsAt` 后由服务器确认额度恢复再切回 Codex。部署与验收见 [部署与验收-v4.0.md](部署与验收-v4.0.md)。
+v4.1 在 v4.0 基础上加入账号隔离的 Codex 登录防抖：同一用户重复创建登录时，后端取消该用户全部未完成流程并要求连续 5 秒无操作后再创建；静默状态可跨后端重启恢复。v4.0 已包含 Canvas 首页待办、Codex OSS 会话来源读取和用户显式开启的五小时额度自动回切。部署与验收见 [部署与验收-v4.1.md](部署与验收-v4.1.md)。
 
 v3.8 新增 Canvas LMS 本人账号的只读连接、在读课程和作业 API，令牌按账号加密保存。部署、接口与限制见 [Canvas接入.md](Canvas接入.md)。Canvas 不依赖 Codex CLI；先使用 Canvas 的服务器可通过 `start-server.ps1 -DisableCodex` 启动。
 
@@ -40,6 +40,8 @@ codex --version
 `codex --version` 必须在**实际启动 server.exe 的同一个 Windows 服务账号**下成功。Windows 发布包应使用根目录的 `start-server.ps1` 启动；它会设置网关开关、数据目录和 Codex 绝对路径，防止计划任务重启后丢失临时环境变量。不要公开 App Server WebSocket 或它的标准输入输出协议；只将现有 HTTPS API 通过 Cloudflare Tunnel 暴露。`data/codex-users` 可能包含 Codex 受管的登录态，必须限制为该服务账号可读写，禁止加入 Git、静态目录、日志或普通云备份。
 
 如果 Codex CLI 通过 npm 全局安装，Windows 通常会同时生成 `codex.ps1` 和 `codex.cmd`；发布包的启动脚本会优先选择 `codex.exe` 或 `codex.cmd`，避免计划任务把 PowerShell shim 当成后端子进程。部署机器人或管理员不应预先运行全局 `codex login`，手机设备码登录会由后端按 AILearningOS 账号分别完成。
+
+同一用户在已有未完成流程时再次请求设备码，会触发登录防抖：服务器通过官方 `account/login/cancel` 取消该用户近期未完成流程，返回 HTTP `429`，并要求连续 5 秒无新请求后再创建。静默期内再次请求会重新计时；状态保存在 SQLite schema 16 中并可跨服务重启恢复。该规则按 LearningOS 用户隔离，匿名登录按客户端安全存储的随机安装标识隔离，不会退出已完成登录或影响其他用户。
 
 网关启用后，服务端保持每个已登录账号的 App Server 连接，每 2 秒增量检查工作目录名为 `OSS` 的线程。只保存用户消息与助手正文，排除推理、命令、工具输出与文件差异；原始对话幂等写入 `data/obsidian-vault/<userId>/Codex Raw`。
 

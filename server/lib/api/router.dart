@@ -44,7 +44,7 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-09-08-canvas-codex-autoreturn-v4.0',
+        'build': '2026-09-08-codex-login-debounce-v4.1',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
         'ai': 'codex-account-model-list-or-deepseek-v4-flash',
@@ -61,6 +61,7 @@ class ApiRouter {
         'mobile_codex_login': 'https-device-code-gateway-per-account',
         'codex_gateway_enabled': codexGateway?.enabled == true,
         'codex_login_recovery': 'account-read-durable-binding-idempotent-v1',
+        'codex_login_debounce': 'per-user-cancel-and-five-second-quiet-v1',
         'word_enrichment': 'provider-aware-30-second-retry-queue',
         'obsidian': 'server-data-vault-markdown',
         'feishu': 'recording-webhook-transcript',
@@ -231,7 +232,22 @@ class ApiRouter {
         if (_bearerToken(request) != null && owner == null) {
           return _unauthorized();
         }
-        return _json(await gateway.startDeviceLogin(owner: owner));
+        final payload = await _readJson(request);
+        return _json(
+          await gateway.startDeviceLogin(
+            owner: owner,
+            clientInstanceId: payload['client_instance_id']?.toString(),
+          ),
+        );
+      } on CodexLoginQuietPeriodException catch (error) {
+        return _json({
+          'error': error.toString(),
+          'code': 'codex_login_quiet_period',
+          'retry_after_seconds': error.retryAfterSeconds,
+          'cancelled_attempts': error.cancelledAttempts,
+        }, statusCode: 429);
+      } on ArgumentError catch (error) {
+        return _json({'error': error.message.toString()}, statusCode: 400);
       } catch (error) {
         return _json({'error': '无法启动 ChatGPT 设备码登录：$error'}, statusCode: 503);
       }

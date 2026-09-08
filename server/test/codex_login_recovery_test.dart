@@ -22,6 +22,7 @@ void main() {
   late List<String> homes;
   var authorized = false;
   var failures = false;
+  late DateTime now;
   Completer<CodexAccountState>? accountBarrier;
   final vault = SecretVault.forTesting(List.filled(32, 23));
 
@@ -63,6 +64,7 @@ void main() {
   setUp(() async {
     authorized = false;
     failures = false;
+    now = DateTime.utc(2026, 9, 8, 12);
     accountBarrier = null;
     clients = [];
     homes = [];
@@ -82,7 +84,7 @@ void main() {
         model: AiConnectionSettings.defaultModel,
       ),
     );
-    gateway = _Gateway(db, clientFactory: factory);
+    gateway = _Gateway(db, clientFactory: factory, clock: () => now);
   });
   tearDown(() async {
     if (accountBarrier != null && !accountBarrier!.isCompleted) {
@@ -153,6 +155,36 @@ void main() {
     },
   );
 
+  test('HTTP start reports a structured five-second quiet period', () async {
+    const ai = HybridAiService();
+    final api = ApiRouter(
+      db,
+      ai,
+      PendingWordEnrichmentProcessor(db, ai, codexGateway: gateway),
+      codexGateway: gateway,
+    );
+    final session = await db.createAuthSession(owner.id);
+    Future<Response> start() => api.router.call(
+      Request(
+        'POST',
+        Uri.parse('http://localhost/api/auth/chatgpt/device/start'),
+        headers: {
+          'content-type': 'application/json',
+          'authorization': 'Bearer ${session.token}',
+        },
+        body: '{}',
+      ),
+    );
+
+    expect((await start()).statusCode, 200);
+    final throttled = await start();
+    expect(throttled.statusCode, 429);
+    final payload = jsonDecode(await throttled.readAsString()) as Map;
+    expect(payload['code'], 'codex_login_quiet_period');
+    expect(payload['retry_after_seconds'], 5);
+    expect(payload['cancelled_attempts'], 1);
+  });
+
   test(
     'missed notification binds existing account without accountId or provider switch',
     () async {
@@ -202,6 +234,108 @@ void main() {
       );
     },
   );
+
+  test(
+    'rapid starts cancel only the same owner and require five quiet seconds',
+    () async {
+      final first = await begin();
+      CodexLoginQuietPeriodException? firstCooldown;
+      try {
+        await gateway.startDeviceLogin(owner: owner);
+      } on CodexLoginQuietPeriodException catch (error) {
+        firstCooldown = error;
+      }
+      expect(firstCooldown, isNotNull);
+      expect(firstCooldown!.cancelledAttempts, 1);
+      expect(firstCooldown.retryAfterSeconds, 5);
+      expect(clients.single.cancelled, true);
+      expect(clients.single.disposed, true);
+      await expectLater(
+        complete(first),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('频繁登录'),
+          ),
+        ),
+      );
+
+      now = now.add(const Duration(seconds: 4));
+      await expectLater(
+        gateway.startDeviceLogin(owner: owner),
+        throwsA(
+          isA<CodexLoginQuietPeriodException>().having(
+            (error) => error.cancelledAttempts,
+            'cancelledAttempts',
+            0,
+          ),
+        ),
+      );
+      expect(clients, hasLength(1));
+
+      // The rejected request above restarted the five-second quiet timer.
+      now = now.add(const Duration(seconds: 5));
+      final replacement = await gateway.startDeviceLogin(owner: owner);
+      expect(replacement['attempt_id'], isNot(first['attempt_id']));
+      expect(clients, hasLength(2));
+    },
+  );
+
+  test('login debounce never cancels another LearningOS user', () async {
+    final first = await begin();
+    final other = await db.createUser(
+      email: 'debounce-other@test.local',
+      displayName: 'Other',
+      passwordHash: '',
+      passwordSalt: '',
+    );
+    final second = await gateway.startDeviceLogin(owner: other);
+    expect(second['attempt_id'], isNot(first['attempt_id']));
+    expect(clients, hasLength(2));
+    expect(clients.every((client) => !client.cancelled), true);
+  });
+
+  test(
+    'anonymous login debounce is isolated by random client instance',
+    () async {
+      final firstClient = List.filled(43, 'A').join();
+      final secondClient = List.filled(43, 'B').join();
+      final first = await gateway.startDeviceLogin(
+        clientInstanceId: firstClient,
+      );
+      await expectLater(
+        gateway.startDeviceLogin(clientInstanceId: firstClient),
+        throwsA(isA<CodexLoginQuietPeriodException>()),
+      );
+      final other = await gateway.startDeviceLogin(
+        clientInstanceId: secondClient,
+      );
+      expect(other['attempt_id'], isNot(first['attempt_id']));
+      expect(clients, hasLength(2));
+    },
+  );
+
+  test('quiet period survives a backend restart', () async {
+    await begin();
+    await expectLater(
+      gateway.startDeviceLogin(owner: owner),
+      throwsA(isA<CodexLoginQuietPeriodException>()),
+    );
+    await gateway.dispose();
+    gateway = _Gateway(db, clientFactory: factory, clock: () => now);
+
+    now = now.add(const Duration(seconds: 1));
+    await expectLater(
+      gateway.startDeviceLogin(owner: owner),
+      throwsA(isA<CodexLoginQuietPeriodException>()),
+    );
+    now = now.add(const Duration(seconds: 5));
+    expect(
+      await gateway.startDeviceLogin(owner: owner),
+      contains('attempt_id'),
+    );
+  });
 
   test(
     'exited child restarts in same isolated home and recovers signed-in state',
@@ -335,7 +469,7 @@ void main() {
 }
 
 class _Gateway extends ServerCodexGateway {
-  _Gateway(super.database, {super.clientFactory});
+  _Gateway(super.database, {super.clientFactory, super.clock});
   @override
   bool get enabled => true;
 }
@@ -345,6 +479,7 @@ class _Client extends CodexAppServerClient {
   final Future<CodexAccountState> Function() read;
   bool alive = true;
   bool disposed = false;
+  bool cancelled = false;
   final _notifications = StreamController<CodexLoginCompleted>.broadcast();
   @override
   bool get isInitialized => alive && !disposed;
@@ -356,7 +491,10 @@ class _Client extends CodexAppServerClient {
   @override
   Future<CodexAccountState> readAccount({bool refreshToken = false}) => read();
   @override
-  Future<void> cancelLogin(String loginId) async {}
+  Future<void> cancelLogin(String loginId) async {
+    cancelled = true;
+  }
+
   @override
   Future<void> dispose() async {
     disposed = true;

@@ -4,6 +4,7 @@ import 'package:ai_study_os/core/codex/chatgpt_auth_service.dart';
 import 'package:ai_study_os/core/security/password_hasher.dart';
 import 'package:ai_study_os/data/app_database.dart';
 import 'package:ai_study_os/design/app_theme.dart';
+import 'package:ai_study_os/design/app_widgets.dart';
 import 'package:ai_study_os/domain/canvas_todo.dart';
 import 'package:ai_study_os/domain/models.dart';
 import 'package:ai_study_os/features/shell/app_shell.dart';
@@ -44,8 +45,19 @@ void main() {
     expect(find.text('已完成'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
     expect(find.text('Submit statistics project'), findsOneWidget);
+    final mobileTabBar = tester.widget<CupertinoTabBar>(
+      find.byType(CupertinoTabBar),
+    );
+    expect(
+      mobileTabBar.items.map((item) => item.label),
+      orderedEquals(['Home', 'Words', 'Journal', 'Setting']),
+    );
+    final bottomBarSurface = tester.widget<LiquidGlassSurface>(
+      find.byKey(const ValueKey('mobile-bottom-bar-surface')),
+    );
+    expect(bottomBarSurface.radius, 0);
 
-    await tester.tap(find.text('单词'));
+    await tester.tap(find.text('Words'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.text('手动导入'), findsOneWidget);
@@ -57,7 +69,7 @@ void main() {
       );
     }
 
-    await tester.tap(find.text('学习笔记'));
+    await tester.tap(find.text('Journal'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.text('AI 分析'), findsOneWidget);
@@ -81,9 +93,9 @@ void main() {
       );
     }
 
-    await tester.tap(find.text('主页'));
+    await tester.tap(find.text('Home'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Settings'));
+    await tester.tap(find.text('Setting'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.text('DeepSeek'), findsWidgets);

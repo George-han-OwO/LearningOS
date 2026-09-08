@@ -21,13 +21,17 @@ class ServerCodexGateway {
     this.executable = 'codex',
     this.arguments = const ['app-server', '--stdio'],
     this.maxPendingLogins = 3,
+    this.loginQuietPeriod = const Duration(seconds: 5),
+    DateTime Function()? clock,
     this.clientFactory,
-  });
+  }) : _clock = clock ?? _utcNow;
 
   final AppDatabase _database;
   final String executable;
   final List<String> arguments;
   final int maxPendingLogins;
+  final Duration loginQuietPeriod;
+  final DateTime Function() _clock;
   final Future<CodexAppServerClient> Function(Directory)? clientFactory;
   Future<void>? _restoringAttempts;
   int _startsInFlight = 0;
@@ -36,14 +40,65 @@ class ServerCodexGateway {
   final Map<int, Map<String, DateTime>> _historyVersions = {};
   final Map<int, CodexAppServerClient> _userClients = {};
   final Map<int, Future<CodexAppServerClient>> _startingUserClients = {};
+  final Map<String, Future<void>> _loginStartTails = {};
 
   bool get enabled =>
       Platform.environment['AILO_CODEX_GATEWAY_ENABLED']?.trim() == '1';
 
-  Future<Map<String, Object?>> startDeviceLogin({AppUser? owner}) async {
+  Future<Map<String, Object?>> startDeviceLogin({
+    AppUser? owner,
+    String? clientInstanceId,
+  }) {
     _ensureEnabled();
+    final requestScope = _loginRequestScope(owner, clientInstanceId);
+    return _serializeLoginStart(
+      requestScope,
+      () => _startDeviceLogin(owner: owner, requestScope: requestScope),
+    );
+  }
+
+  Future<Map<String, Object?>> _startDeviceLogin({
+    required AppUser? owner,
+    required String requestScope,
+  }) async {
     await _restoreAttempts();
     await _removeExpiredPendingLogins();
+    final now = _clock().toUtc();
+    final quietUntil = await _database.codexLoginQuietUntil(requestScope);
+    if (quietUntil != null && quietUntil.isAfter(now)) {
+      await _beginLoginQuietPeriod(requestScope, now);
+      throw CodexLoginQuietPeriodException(
+        retryAfterSeconds: loginQuietPeriod.inSeconds,
+        cancelledAttempts: 0,
+      );
+    }
+    final recent = _pending.values
+        .where(
+          (pending) =>
+              pending.requestScope == requestScope &&
+              pending.status == 'pending',
+        )
+        .toList(growable: false);
+    if (recent.isNotEmpty) {
+      var cancelled = 0;
+      for (final pending in recent) {
+        await _cancelPendingLogin(
+          pending,
+          message:
+              '检测到频繁登录，此次登录已被服务器自动取消。'
+              '请停止操作 ${loginQuietPeriod.inSeconds} 秒后重试。',
+        );
+        cancelled++;
+      }
+      await _beginLoginQuietPeriod(requestScope, now);
+      throw CodexLoginQuietPeriodException(
+        retryAfterSeconds: loginQuietPeriod.inSeconds,
+        cancelledAttempts: cancelled,
+      );
+    }
+    if (quietUntil != null) {
+      await _database.clearCodexLoginQuietPeriod(requestScope);
+    }
     if (_pending.values.where((p) => p.status == 'pending').length +
             _startsInFlight >=
         maxPendingLogins) {
@@ -66,6 +121,7 @@ class ServerCodexGateway {
         client: client,
         loginId: login.loginId,
         ownerUserId: owner?.id,
+        requestScope: requestScope,
         expiresAt: expiresAt,
       );
       await _database.saveCodexLoginAttempt({
@@ -74,6 +130,7 @@ class ServerCodexGateway {
         'home_id': homeId,
         'login_id': login.loginId,
         'owner_user_id': owner?.id,
+        'request_scope': requestScope,
         'expires_at': expiresAt.toIso8601String(),
       });
       _pending[attemptId] = pending;
@@ -137,15 +194,58 @@ class ServerCodexGateway {
     await _restoreAttempts();
     final pending = _readPending(attemptId, attemptSecret, requester);
     if (pending.status != 'pending') return;
+    await _cancelPendingLogin(pending);
+  }
+
+  Future<void> _cancelPendingLogin(
+    _PendingDeviceLogin pending, {
+    String? message,
+  }) async {
+    if (pending.status != 'pending') return;
     // A late cancel from an old phone must never close an adopted session.
     pending.status = 'cancelled';
-    await _database.endCodexLoginAttempt(pending.attemptId, 'cancelled');
+    pending.errorMessage = message;
+    await _database.endCodexLoginAttempt(
+      pending.attemptId,
+      'cancelled',
+      message: message,
+    );
     try {
       await pending.client?.cancelLogin(pending.loginId);
+    } catch (_) {
+      // Cancellation is best effort. Closing the isolated App Server below is
+      // authoritative and prevents a stale completion from being adopted.
     } finally {
       await pending.stopListening();
       await pending.client?.dispose();
     }
+  }
+
+  Future<void> _beginLoginQuietPeriod(String requestScope, DateTime now) =>
+      _database.setCodexLoginQuietUntil(
+        requestScope,
+        now.toUtc().add(loginQuietPeriod),
+      );
+
+  Future<T> _serializeLoginStart<T>(
+    String requestScope,
+    Future<T> Function() operation,
+  ) {
+    final previous = _loginStartTails[requestScope] ?? Future<void>.value();
+    final release = Completer<void>();
+    final tail = release.future;
+    _loginStartTails[requestScope] = tail;
+    return () async {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        release.complete();
+        if (identical(_loginStartTails[requestScope], tail)) {
+          _loginStartTails.remove(requestScope);
+        }
+      }
+    }();
   }
 
   Future<ServerCodexLoginResult> _loginResult(
@@ -755,6 +855,19 @@ class ServerCodexGateway {
   static String _hashSecret(String value) =>
       sha256.convert(utf8.encode(value)).toString();
 
+  static DateTime _utcNow() => DateTime.now().toUtc();
+
+  static String _loginRequestScope(AppUser? owner, String? clientInstanceId) {
+    if (owner != null) return 'user:${owner.id}';
+    final clientId = clientInstanceId?.trim() ?? '';
+    if (!RegExp(r'^[A-Za-z0-9_-]{32,160}$').hasMatch(clientId)) {
+      throw ArgumentError('请先更新 AILearningOS 客户端，再发起 ChatGPT-Codex 登录。');
+    }
+    // Persist only a one-way digest. The random installation identifier is
+    // not an account credential and never appears in server logs.
+    return 'client:${_hashSecret(clientId)}';
+  }
+
   static String _displayName(String? email) {
     final local = email?.split('@').first.trim();
     return local == null || local.isEmpty ? 'ChatGPT 用户' : local;
@@ -830,6 +943,21 @@ class ServerCodexLoginResult {
   final AuthSession session;
 }
 
+class CodexLoginQuietPeriodException implements Exception {
+  const CodexLoginQuietPeriodException({
+    required this.retryAfterSeconds,
+    required this.cancelledAttempts,
+  });
+
+  final int retryAfterSeconds;
+  final int cancelledAttempts;
+
+  @override
+  String toString() =>
+      'Codex 登录请求过于频繁，已取消近期未完成的登录。请停止操作 '
+      '$retryAfterSeconds 秒后再创建新的登录。';
+}
+
 class _PendingDeviceLogin {
   _PendingDeviceLogin({
     required this.attemptId,
@@ -838,6 +966,7 @@ class _PendingDeviceLogin {
     this.client,
     required this.loginId,
     this.ownerUserId,
+    required this.requestScope,
     required this.expiresAt,
   });
 
@@ -847,6 +976,7 @@ class _PendingDeviceLogin {
   CodexAppServerClient? client;
   final String loginId;
   final int? ownerUserId;
+  final String requestScope;
   final DateTime expiresAt;
   String status = 'pending';
   bool checking = false;
@@ -866,6 +996,8 @@ class _PendingDeviceLogin {
       homeId: row['home_id'] as String,
       loginId: row['login_id'] as String,
       ownerUserId: row['owner_user_id'] as int?,
+      requestScope:
+          row['request_scope']?.toString() ?? 'legacy:${row['attempt_id']}',
       expiresAt: DateTime.parse(row['expires_at'] as String),
     );
     value.status = row['status'] as String;

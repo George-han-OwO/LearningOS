@@ -50,7 +50,7 @@ class AppDatabase {
     final database = await factory.openDatabase(
       databasePath,
       options: OpenDatabaseOptions(
-        version: 15,
+        version: 16,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -78,6 +78,7 @@ class AppDatabase {
           if (oldVersion >= 10 && oldVersion < 15) {
             await _addCodexAutoReturnColumns(db);
           }
+          if (oldVersion < 16) await _addCodexLoginDebounce(db);
         },
       ),
     );
@@ -189,6 +190,7 @@ class AppDatabase {
     await _createCodexUserHomesTable(db);
     await _createCanvasConnectionsTable(db);
     await _createCodexLoginAttemptsTable(db);
+    await _createCodexLoginGuardsTable(db);
     await _createExternalAuthIndex(db);
     await _createConversationSyncTables(db);
     await _createEmailSyncTables(db);
@@ -1028,6 +1030,7 @@ class AppDatabase {
       home_id TEXT NOT NULL,
       login_id TEXT NOT NULL,
       owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      request_scope TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       target_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -1035,6 +1038,35 @@ class AppDatabase {
       error_message TEXT
     )
   ''');
+
+  static Future<void> _createCodexLoginGuardsTable(Database db) =>
+      db.execute('''
+    CREATE TABLE IF NOT EXISTS codex_login_guards (
+      request_scope TEXT PRIMARY KEY,
+      quiet_until TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+
+  static Future<void> _addCodexLoginDebounce(Database db) async {
+    final columns = await db.rawQuery(
+      'PRAGMA table_info(codex_login_attempts)',
+    );
+    if (!columns.any((column) => column['name'] == 'request_scope')) {
+      await db.execute(
+        "ALTER TABLE codex_login_attempts ADD COLUMN request_scope TEXT NOT NULL DEFAULT ''",
+      );
+      await db.execute('''
+        UPDATE codex_login_attempts
+        SET request_scope = CASE
+          WHEN owner_user_id IS NOT NULL THEN 'user:' || owner_user_id
+          ELSE 'legacy:' || attempt_id
+        END
+        WHERE request_scope = ''
+      ''');
+    }
+    await _createCodexLoginGuardsTable(db);
+  }
 
   Future<void> saveCodexLoginAttempt(Map<String, Object?> row) async {
     await _database.insert('codex_login_attempts', row);
@@ -1097,6 +1129,40 @@ class AppDatabase {
       {'status': status, 'error_message': message},
       where: 'attempt_id = ? AND status = ?',
       whereArgs: [attemptId, 'pending'],
+    );
+  }
+
+  Future<DateTime?> codexLoginQuietUntil(String requestScope) async {
+    final rows = await _database.query(
+      'codex_login_guards',
+      columns: const ['quiet_until'],
+      where: 'request_scope = ?',
+      whereArgs: [requestScope],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return DateTime.tryParse(
+      rows.single['quiet_until']?.toString() ?? '',
+    )?.toUtc();
+  }
+
+  Future<void> setCodexLoginQuietUntil(
+    String requestScope,
+    DateTime quietUntil,
+  ) async {
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _database.insert('codex_login_guards', {
+      'request_scope': requestScope,
+      'quiet_until': quietUntil.toUtc().toIso8601String(),
+      'updated_at': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> clearCodexLoginQuietPeriod(String requestScope) async {
+    await _database.delete(
+      'codex_login_guards',
+      where: 'request_scope = ?',
+      whereArgs: [requestScope],
     );
   }
 
