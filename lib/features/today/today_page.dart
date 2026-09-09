@@ -6,10 +6,17 @@ import '../../design/app_widgets.dart';
 import '../../domain/canvas_todo.dart';
 import '../shell/app_shell.dart';
 
-class TodayPage extends StatelessWidget {
+class TodayPage extends StatefulWidget {
   const TodayPage({required this.onNavigate, super.key});
 
   final ValueChanged<AppDestination> onNavigate;
+
+  @override
+  State<TodayPage> createState() => _TodayPageState();
+}
+
+class _TodayPageState extends State<TodayPage> {
+  String? _expandedCourse;
 
   @override
   Widget build(BuildContext context) {
@@ -19,7 +26,6 @@ class TodayPage extends StatelessWidget {
     final todayJournals = controller.notes
         .where((note) => _isToday(note.updatedAt))
         .length;
-    final dueWords = stats.dueWords;
     final canvas = controller.canvasTodoState;
 
     return AppPage(
@@ -29,7 +35,7 @@ class TodayPage extends StatelessWidget {
         CupertinoButton(
           padding: EdgeInsets.zero,
           minimumSize: const Size(42, 42),
-          onPressed: () => onNavigate(AppDestination.settings),
+          onPressed: () => widget.onNavigate(AppDestination.settings),
           child: _HomeAvatar(name: user.displayName),
         ),
       ],
@@ -43,31 +49,7 @@ class TodayPage extends StatelessWidget {
               semanticLabel: '刷新 Canvas 待办',
               onPressed: canvas.loading ? null : controller.refreshCanvasTodos,
             ),
-            children: [
-              ..._canvasPendingRows(canvas),
-              AppGroupRow(
-                icon: dueWords == 0
-                    ? CupertinoIcons.check_mark_circled_solid
-                    : CupertinoIcons.book_fill,
-                title: dueWords == 0 ? '单词复习已完成' : '复习 $dueWords 个到期单词',
-                subtitle: dueWords == 0 ? '今天没有待复习单词' : '进入单词库开始复习',
-                tint: dueWords == 0 ? AppPalette.green : AppPalette.blue,
-                tintBackground: dueWords == 0
-                    ? AppPalette.greenSoft
-                    : AppPalette.blueSoft,
-                onTap: () => onNavigate(AppDestination.words),
-              ),
-              AppGroupRow(
-                icon: CupertinoIcons.pencil_outline,
-                title: todayJournals == 0 ? '写今日 Learning Journal' : '继续记录今日学习',
-                subtitle: todayJournals == 0
-                    ? '按统一模板记录目标、过程与反思'
-                    : '今天已有 $todayJournals 篇学习笔记',
-                tint: AppPalette.purple,
-                tintBackground: AppPalette.softSurface,
-                onTap: () => onNavigate(AppDestination.journal),
-              ),
-            ],
+            children: [..._canvasCourseRows(canvas)],
           ),
           const SizedBox(height: 20),
           AppGroup(
@@ -80,7 +62,7 @@ class TodayPage extends StatelessWidget {
                   subtitle: 'Canvas · ${item.courseName} · ${item.statusLabel}',
                   tint: AppPalette.green,
                   tintBackground: AppPalette.greenSoft,
-                  onTap: () => onNavigate(AppDestination.settings),
+                  onTap: () => widget.onNavigate(AppDestination.settings),
                 ),
               AppGroupRow(
                 icon: CupertinoIcons.check_mark_circled_solid,
@@ -95,7 +77,7 @@ class TodayPage extends StatelessWidget {
                 subtitle: '今天已保存的学习记录',
                 tint: AppPalette.blue,
                 tintBackground: AppPalette.blueSoft,
-                onTap: () => onNavigate(AppDestination.journal),
+                onTap: () => widget.onNavigate(AppDestination.journal),
               ),
             ],
           ),
@@ -106,7 +88,7 @@ class TodayPage extends StatelessWidget {
                 icon: CupertinoIcons.settings,
                 title: 'Settings',
                 subtitle: '账号、DeepSeek 与 ChatGPT-Codex 切换',
-                onTap: () => onNavigate(AppDestination.settings),
+                onTap: () => widget.onNavigate(AppDestination.settings),
               ),
             ],
           ),
@@ -129,7 +111,7 @@ class TodayPage extends StatelessWidget {
         local.day == now.day;
   }
 
-  List<Widget> _canvasPendingRows(CanvasTodoState state) {
+  List<Widget> _canvasCourseRows(CanvasTodoState state) {
     if (state.loading && state.items.isEmpty) {
       return const [
         AppGroupRow(
@@ -148,7 +130,7 @@ class TodayPage extends StatelessWidget {
           subtitle: state.error,
           tint: AppPalette.orange,
           tintBackground: AppPalette.orangeSoft,
-          onTap: () => onNavigate(AppDestination.settings),
+          onTap: () => widget.onNavigate(AppDestination.settings),
         ),
       ];
     }
@@ -158,7 +140,7 @@ class TodayPage extends StatelessWidget {
           icon: CupertinoIcons.cloud,
           title: '连接 Canvas 信息源',
           subtitle: '连接后，作业、截止时间和提交状态会进入待办',
-          onTap: () => onNavigate(AppDestination.settings),
+          onTap: () => widget.onNavigate(AppDestination.settings),
         ),
       ];
     }
@@ -174,27 +156,19 @@ class TodayPage extends StatelessWidget {
         ),
       ];
     }
+    final courses = <String, List<CanvasTodoItem>>{};
+    for (final item in pending) {
+      courses.putIfAbsent(item.courseName, () => []).add(item);
+    }
     return [
-      for (final item in pending.take(5))
-        AppGroupRow(
-          icon: item.overdue
-              ? CupertinoIcons.exclamationmark_triangle_fill
-              : CupertinoIcons.calendar,
-          title: item.title,
-          subtitle:
-              'Canvas · ${item.courseName} · ${_dueLabel(item.dueAt)} · ${item.statusLabel}',
-          tint: item.overdue ? AppPalette.orange : AppPalette.blue,
-          tintBackground: item.overdue
-              ? AppPalette.orangeSoft
-              : AppPalette.blueSoft,
-          onTap: () => onNavigate(AppDestination.settings),
-        ),
-      if (pending.length > 5)
-        AppGroupRow(
-          icon: CupertinoIcons.ellipsis_circle,
-          title: '还有 ${pending.length - 5} 项 Canvas 待办',
-          subtitle: '进入 Settings 查看 Canvas 信息源',
-          onTap: () => onNavigate(AppDestination.settings),
+      for (final entry in courses.entries)
+        _CourseTodoCard(
+          courseName: entry.key,
+          assignments: entry.value,
+          expanded: _expandedCourse == entry.key,
+          onTap: () => setState(() {
+            _expandedCourse = _expandedCourse == entry.key ? null : entry.key;
+          }),
         ),
     ];
   }
@@ -211,6 +185,181 @@ class TodayPage extends StatelessWidget {
     if (date == today) return '今天 $time';
     if (date == today.add(const Duration(days: 1))) return '明天 $time';
     return '${value.month}月${value.day}日 $time';
+  }
+}
+
+class _CourseTodoCard extends StatelessWidget {
+  const _CourseTodoCard({
+    required this.courseName,
+    required this.assignments,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final String courseName;
+  final List<CanvasTodoItem> assignments;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final overdueCount = assignments.where((item) => item.overdue).length;
+    final nearestDue = assignments
+        .map((item) => item.dueAt)
+        .whereType<DateTime>()
+        .fold<DateTime?>(
+          null,
+          (nearest, due) =>
+              nearest == null || due.isBefore(nearest) ? due : nearest,
+        );
+    final accent = overdueCount > 0 ? AppPalette.orange : AppPalette.blue;
+    final accentSoft = overdueCount > 0
+        ? AppPalette.orangeSoft
+        : AppPalette.blueSoft;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CupertinoButton(
+          key: ValueKey('today-course-$courseName'),
+          padding: EdgeInsets.zero,
+          pressedOpacity: 0.72,
+          onPressed: onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(15, 13, 14, 13),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: AppPalette.resolve(context, accentSoft),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  alignment: Alignment.center,
+                  child: Icon(
+                    CupertinoIcons.book_fill,
+                    size: 19,
+                    color: AppPalette.resolve(context, accent),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        courseName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.body.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: AppPalette.resolve(context, AppPalette.text),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        overdueCount > 0
+                            ? '${assignments.length} 项作业 · $overdueCount 项逾期'
+                            : '${assignments.length} 项作业${nearestDue == null ? '' : ' · 最近 ${_TodayPageState._dueLabel(nearestDue)}'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppPalette.resolve(
+                            context,
+                            AppPalette.secondaryText,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                AnimatedRotation(
+                  turns: expanded ? 0.25 : 0,
+                  duration: const Duration(milliseconds: 180),
+                  child: Icon(
+                    CupertinoIcons.chevron_right,
+                    size: 17,
+                    color: AppPalette.resolve(
+                      context,
+                      AppPalette.secondaryText,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          alignment: Alignment.topCenter,
+          child: expanded
+              ? Column(
+                  children: [
+                    for (final item in assignments) _AssignmentRow(item: item),
+                  ],
+                )
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+}
+
+class _AssignmentRow extends StatelessWidget {
+  const _AssignmentRow({required this.item});
+
+  final CanvasTodoItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final tint = item.overdue ? AppPalette.orange : AppPalette.secondaryText;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(67, 0, 14, 10),
+      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: AppPalette.resolve(context, AppPalette.softSurface),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Icon(
+              item.overdue
+                  ? CupertinoIcons.exclamationmark_circle_fill
+                  : CupertinoIcons.circle,
+              size: 16,
+              color: AppPalette.resolve(context, tint),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.title,
+                  style: AppTextStyles.body.copyWith(
+                    fontSize: 15,
+                    color: AppPalette.resolve(context, AppPalette.text),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${_TodayPageState._dueLabel(item.dueAt)} · ${item.statusLabel}',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppPalette.resolve(context, tint),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

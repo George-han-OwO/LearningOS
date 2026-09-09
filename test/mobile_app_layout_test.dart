@@ -44,6 +44,10 @@ void main() {
     expect(find.text('今日待办'), findsOneWidget);
     expect(find.text('已完成'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('AP Statistics'), findsOneWidget);
+    expect(find.text('Submit statistics project'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('today-course-AP Statistics')));
+    await tester.pumpAndSettle();
     expect(find.text('Submit statistics project'), findsOneWidget);
     final mobileTabBar = tester.widget<CupertinoTabBar>(
       find.byType(CupertinoTabBar),

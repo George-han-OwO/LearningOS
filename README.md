@@ -102,12 +102,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android：`release/AILearningOS-android-v1.5.4.apk`
+- Android：`release/AILearningOS-android-v1.5.5.apk`
 - Windows 后端：`release/AILearningOS-server-windows-x64-v4.1.zip`
 - 后端源码：`release/AILearningOS-server-source-v4.1.zip`
 - v4.1 部署与验收：[server/部署与验收-v4.1.md](server/部署与验收-v4.1.md)
 
-无圆角四项英文底栏和匿名登录隔离标识需要 v1.5.4 客户端；登录防抖、Canvas 首页待办、OSS 来源修复和五小时额度自动回切需要在另一台电脑部署 v4.1 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
+课程折叠式今日待办需要 v1.5.5 客户端；登录防抖、Canvas 首页待办数据、OSS 来源修复和五小时额度自动回切需要在另一台电脑部署 v4.1 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 
