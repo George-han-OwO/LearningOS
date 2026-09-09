@@ -1461,6 +1461,70 @@ class AppDatabase {
     });
   }
 
+  /// Rebuild the day's recording digest from idempotent recording notes.
+  /// Recording dates use Asia/Shanghai, independently of the server timezone.
+  Future<void> saveRecordingDay({
+    required int userId,
+    required String recordingId,
+    required String title,
+    required String chinese,
+    required String english,
+    required DateTime recordedAt,
+  }) async {
+    final local = recordedAt.toUtc().add(const Duration(hours: 8));
+    final day =
+        '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}';
+    final source = '飞书录音原稿:$recordingId';
+    final dailySource = '飞书录音每日总结:$day';
+    await _database.transaction((tx) async {
+      await tx.delete(
+        'notes',
+        where: 'user_id = ? AND source = ?',
+        whereArgs: [userId, source],
+      );
+      await tx.insert('notes', {
+        'user_id': userId,
+        'title': title,
+        'content_en': english,
+        'content_zh': chinese,
+        'source': source,
+        'updated_at': '${day}T12:00:00+08:00',
+      });
+      final entries = await tx.query(
+        'notes',
+        where: 'user_id = ? AND source LIKE ? AND updated_at = ?',
+        whereArgs: [userId, '飞书录音原稿:%', '${day}T12:00:00+08:00'],
+        orderBy: 'id ASC',
+      );
+      final body =
+          '## 今日录音总结\n\n共 ${entries.length} 段录音 · $day\n\n${entries.map((e) => '### ${e['title']}\n\n${e['content_zh']}').join('\n\n---\n\n')}';
+      await tx.delete(
+        'notes',
+        where: 'user_id = ? AND source = ?',
+        whereArgs: [userId, dailySource],
+      );
+      await tx.insert('notes', {
+        'user_id': userId,
+        'title': '$day · 录音日记',
+        'content_en': '',
+        'content_zh': body,
+        'source': dailySource,
+        'updated_at': '${day}T12:00:00+08:00',
+      });
+      await saveObsidianEntry(
+        userId: userId,
+        title: '$day 录音日记',
+        contentEnglish: '',
+        contentChinese: body,
+        source: '飞书录音豆每日总结',
+        category: 'Recording Daily',
+        tags: ['feishu', 'recording', 'daily'],
+        sourceId: 'feishu-daily-$day',
+        updatedAt: recordedAt,
+      );
+    });
+  }
+
   Future<ConversationSyncState> conversationSyncState(int userId) async {
     final rows = await _database.query(
       'conversation_sync_state',

@@ -21,6 +21,7 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 
 - `新建 Journal`：预填充固定 Markdown 模板，由用户手动填写。
 - `AI 分析`：提取学习目标、内容、概念、证据、行动项与候选单词，并保存成同一模板。
+- `录音日记`：飞书录音豆摘要按日期收进光盘柜，支持左右循环浏览和点击阅读；每日内容同步保存在服务器数据库与 Obsidian。
 - 新建笔记统一使用 `# Learning Journal` 的八段式结构：基本信息、学习目标、内容记录、学习过程、反思与理解、成果输出、下一步计划、今日自评与自由记录。
 - 升级前的旧笔记不删除，仍可在学习笔记列表中查看。
 
@@ -53,7 +54,7 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 - 后端使用[官方 Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)中的 `thread/list` 与 `thread/turns/list` 读取历史，并显式包含 `appServer` 等来源，避免只依赖默认 `cli`/`vscode` 来源而漏会话。
 - 仅处理工作目录最后一级名为 `OSS` 的会话；只同步用户与助手文本，排除 reasoning、命令和工具输出。
 - 后端每两秒做增量检查并写入该 LearningOS 用户的会话收件箱与 Obsidian 原始记录。
-- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.1 后，用真实已登录账号完成线上历史接口验收。
+- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.2 后，用真实已登录账号完成线上历史接口验收。
 
 ## 系统边界
 
@@ -73,7 +74,7 @@ Claw = 独立的 AI 部署/更新机器人
 
 - Codex 不在手机上运行；手机只调用后端提供的 Codex 能力。
 - Claw 不是后端，不参与登录、AI 请求路由或额度消耗。它只能在被授权时协助更新服务器文件。
-- Canvas 已作为主页待办信息源重新接入。邮件、飞书、课程、采集等旧界面仍不在当前精简客户端主流程中；后端旧接口和数据表暂时保留用于升级兼容。
+- Canvas 已作为主页待办信息源接入；飞书录音摘要通过 Journal 的录音日记光盘柜进入当前主流程。邮件、课程、采集等旧界面仍不在精简客户端主流程中。
 - 客户端不再启动旧的邮件/对话自动采集定时器；AI 分析由用户手动触发。
 
 ## 运行与验证
@@ -102,12 +103,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android：`release/AILearningOS-android-v1.5.5.apk`
-- Windows 后端：`release/AILearningOS-server-windows-x64-v4.1.zip`
-- 后端源码：`release/AILearningOS-server-source-v4.1.zip`
-- v4.1 部署与验收：[server/部署与验收-v4.1.md](server/部署与验收-v4.1.md)
+- Android：`release/AILearningOS-android-v1.6.0.apk`
+- Windows 后端：`release/AILearningOS-server-windows-x64-v4.2.zip`
+- 后端源码：`release/AILearningOS-server-source-v4.2.zip`
+- v4.2 部署与验收：[server/部署与验收-v4.2.md](server/部署与验收-v4.2.md)
 
-课程折叠式今日待办需要 v1.5.5 客户端；登录防抖、Canvas 首页待办数据、OSS 来源修复和五小时额度自动回切需要在另一台电脑部署 v4.1 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
+录音日记光盘柜需要 v1.6.0 客户端；飞书每日归档、登录防抖、Canvas、OSS 和额度自动回切需要在另一台电脑部署 v4.2 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 

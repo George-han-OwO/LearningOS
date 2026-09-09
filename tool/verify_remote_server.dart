@@ -26,8 +26,8 @@ Future<void> main() async {
 
     final version = await _getJson(client, baseUri, '/version');
     final build = version['build']?.toString() ?? '';
-    if (!build.contains('v4.1')) {
-      _fail('远程服务不是待验收的 v4.1（实际 build：$build）。');
+    if (!build.contains('v4.2')) {
+      _fail('远程服务不是待验收的 v4.2（实际 build：$build）。');
     }
     if (version['codex_gateway_enabled'] != true) {
       _fail('远程服务已响应，但 Codex 网关未启用。');
@@ -35,6 +35,9 @@ Future<void> main() async {
     if (version['codex_login_debounce'] !=
         'per-user-cancel-and-five-second-quiet-v1') {
       _fail('远程服务没有启用账号隔离的五秒 Codex 登录防抖。');
+    }
+    if (version['recording_daily'] != 'asia-shanghai-idempotent-obsidian-v1') {
+      _fail('远程服务没有启用飞书录音每日总结与 Obsidian 归档。');
     }
 
     final headers = {'Authorization': 'Bearer $token'};

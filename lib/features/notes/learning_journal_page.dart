@@ -5,6 +5,7 @@ import '../../design/app_theme.dart';
 import '../../design/app_widgets.dart';
 import '../../domain/learning_journal.dart';
 import '../../domain/models.dart';
+import 'recording_shelf_page.dart';
 
 class LearningJournalPage extends StatelessWidget {
   const LearningJournalPage({super.key});
@@ -13,6 +14,9 @@ class LearningJournalPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = AppScope.of(context);
     final journals = controller.notes;
+    final visibleJournals = journals
+        .where((note) => !note.source.startsWith('飞书录音'))
+        .toList(growable: false);
     return AppPage(
       title: 'Learning Journal',
       subtitle: '${journals.length} 篇学习笔记 · 统一结构化格式',
@@ -42,16 +46,38 @@ class LearningJournalPage extends StatelessWidget {
           onPressed: controller.busy ? null : () => _showEditor(context),
         ),
       ],
-      child: journals.isEmpty
-          ? const _EmptyJournal()
-          : Column(
-              children: [
-                for (final journal in journals) ...[
-                  _JournalCard(journal: journal),
-                  const SizedBox(height: 12),
-                ],
-              ],
-            ),
+      child: Column(
+        children: [
+          AppGroup(
+            children: [
+              AppGroupRow(
+                icon: CupertinoIcons.music_albums,
+                title: '录音日记',
+                subtitle: '飞书录音豆 · 把每一天收藏成一张光盘',
+                onTap: () => Navigator.of(context).push(
+                  CupertinoPageRoute<void>(
+                    builder: (_) => AppScope(
+                      controller: controller,
+                      child: const RecordingShelfPage(),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          visibleJournals.isEmpty
+              ? const _EmptyJournal()
+              : Column(
+                  children: [
+                    for (final journal in visibleJournals) ...[
+                      _JournalCard(journal: journal),
+                      const SizedBox(height: 12),
+                    ],
+                  ],
+                ),
+        ],
+      ),
     );
   }
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import '../data/app_database.dart';
@@ -44,7 +45,7 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-09-08-codex-login-debounce-v4.1',
+        'build': '2026-09-09-feishu-recording-journal-v4.2',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
         'ai': 'codex-account-model-list-or-deepseek-v4-flash',
@@ -64,7 +65,8 @@ class ApiRouter {
         'codex_login_debounce': 'per-user-cancel-and-five-second-quiet-v1',
         'word_enrichment': 'provider-aware-30-second-retry-queue',
         'obsidian': 'server-data-vault-markdown',
-        'feishu': 'recording-webhook-transcript',
+        'feishu': 'recording-webhook-daily-journal-v2',
+        'recording_daily': 'asia-shanghai-idempotent-obsidian-v1',
         'canvas': 'account-bound-readonly-courses-assignments-v1',
       });
     });
@@ -1057,19 +1059,20 @@ $transcript''',
             ) ??
             DateTime.now().toUtc();
         final sourceId =
-            'feishu-${recordingId.isEmpty ? updatedAt.microsecondsSinceEpoch : recordingId}';
+            'feishu-${recordingId.isEmpty ? sha256.convert(utf8.encode(transcript)).toString() : recordingId}';
         final words = _parsedWords(summary['words']);
         if (words.isNotEmpty) {
           await db.insertWords(userId: int.parse(userId), words: words);
           pendingWordWorker?.wakeUp();
         }
         final summaryTitle = _stringOr(summary['title'], title);
-        await db.addNote(
+        await db.saveRecordingDay(
           userId: int.parse(userId),
+          recordingId: sourceId,
           title: summaryTitle,
-          contentEnglish: summaryEnglish,
-          contentChinese: contentChinese,
-          source: '飞书录音豆自动同步',
+          english: summaryEnglish,
+          chinese: contentChinese,
+          recordedAt: updatedAt,
         );
         await db.saveObsidianEntry(
           userId: int.parse(userId),

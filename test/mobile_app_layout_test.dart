@@ -78,6 +78,25 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('AI 分析'), findsOneWidget);
     expect(find.text('新建'), findsOneWidget);
+    await tester.tap(find.text('录音日记'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('每天，都值得被收藏。'), findsOneWidget);
+    if (_writePreviews) {
+      await expectLater(
+        find.byType(CupertinoApp),
+        matchesGoldenFile('goldens/recording_shelf.png'),
+      );
+    }
+    await tester.tap(find.byIcon(CupertinoIcons.arrow_right));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('2026-09-09').hitTestable().first);
+    await tester.pumpAndSettle();
+    expect(find.text('今日录音测试摘要'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await tester.tap(find.text('新建'));
     await tester.pumpAndSettle();
     final journalField = tester.widget<CupertinoTextField>(
@@ -166,6 +185,15 @@ class _PreviewController extends AppController {
 
   @override
   List<StudyNote> get notes => [
+    StudyNote(
+      id: 50,
+      userId: 1,
+      title: '2026-09-09 · 录音日记',
+      contentEnglish: '',
+      contentChinese: '今日录音测试摘要',
+      source: '飞书录音每日总结:2026-09-09',
+      updatedAt: _now,
+    ),
     StudyNote(
       id: 1,
       userId: 1,

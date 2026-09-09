@@ -77,6 +77,10 @@ void main() {
         'manual-or-explicit-codex-quota-auto-return',
       );
       expect(payload['codex_gateway_enabled'], isTrue);
+      expect(
+        payload['recording_daily'],
+        'asia-shanghai-idempotent-obsidian-v1',
+      );
       expect(payload['ai_features'], {
         'word_enrichment': 'selected_provider',
         'conversation_notes': 'selected_provider',
@@ -442,6 +446,50 @@ void main() {
     },
   );
 
+  test('Feishu transcript creates a daily recording journal', () async {
+    final user = await database.createUser(
+      email:
+          'feishu-digest-${DateTime.now().microsecondsSinceEpoch}@test.local',
+      displayName: 'Feishu Digest Test',
+      passwordHash: '',
+      passwordSalt: '',
+    );
+    await database.saveAiSettings(
+      user.id,
+      const AiConnectionSettings(
+        enabled: true,
+        apiKey: 'test-deepseek-key',
+        model: AiConnectionSettings.defaultModel,
+      ),
+    );
+
+    final response = await http.post(
+      Uri.parse('$host/api/feishu/${user.id}/webhook'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'recording_id': 'recording-digest-1',
+        'title': '统计学讨论',
+        'created_at': '2026-09-09T18:00:00Z',
+        'transcript': 'Today we discussed population, sample, and bias.',
+      }),
+    );
+
+    expect(response.statusCode, 200);
+    expect(jsonDecode(response.body), containsPair('accepted', true));
+    final notes = await database.notesForUser(user.id);
+    final daily = notes.singleWhere(
+      (note) => note.source == '飞书录音每日总结:2026-09-10',
+    );
+    expect(daily.contentChinese, contains('这是一段测试摘要'));
+    expect(
+      dataDirectory
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => file.path.contains('Recording Daily')),
+      isNotEmpty,
+    );
+  });
+
   test('unknown endpoint returns 404', () async {
     final response = await http.get(Uri.parse('$host/not-found'));
     expect(response.statusCode, 404);
@@ -660,6 +708,18 @@ class _RecordingDeepSeekService extends DeepSeekService {
     required String prompt,
   }) async {
     completedPrompts.add(prompt);
+    if (prompt.startsWith('Summarize this Feishu recording')) {
+      return jsonEncode({
+        'title': '统计学讨论摘要',
+        'category': 'Learning',
+        'tags': ['statistics'],
+        'summaryEnglish': 'A test summary.',
+        'summaryChinese': '这是一段测试摘要。',
+        'learnedConcepts': ['总体与样本'],
+        'actionItems': ['复习抽样偏差'],
+        'words': <Object>[],
+      });
+    }
     return 'deepseek:$prompt';
   }
 
