@@ -25,6 +25,14 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 - 新建笔记统一使用 `# Learning Journal` 的八段式结构：基本信息、学习目标、内容记录、学习过程、反思与理解、成果输出、下一步计划、今日自评与自由记录。
 - 升级前的旧笔记不删除，仍可在学习笔记列表中查看。
 
+### Evidence Pack 与周期复盘
+
+- Journal 内的 `Evidence Pack` 把 Learning Journal、飞书录音记录与 Canvas 作业合并成可浏览证据索引。
+- 每条证据显示来源、时间、关联类型、项目/课程，并区分原始记录、学生解释/反思、AI 生成与待确认内容。
+- 支持全文搜索和 `Learner / Coach / MEL` 本机授权视图；Coach 和 MEL 默认看不到原始录音与未经学生确认的 AI 内容。
+- 查无证据时明确返回“不知道”，不把 AI 推断当作事实。
+- `Daily / Weekly / Monthly Review` 先生成带来源的可编辑草稿；只有用户点击“我已检查，确认并保存”后才作为学生确认复盘入库。
+
 ## AI 双路由
 
 `Settings > AI 模型源` 是账号级开关，可在下列两条路线中选择一条：
@@ -54,7 +62,7 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 - 后端使用[官方 Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)中的 `thread/list` 与 `thread/turns/list` 读取历史，并显式包含 `appServer` 等来源，避免只依赖默认 `cli`/`vscode` 来源而漏会话。
 - 仅处理工作目录最后一级名为 `OSS` 的会话；只同步用户与助手文本，排除 reasoning、命令和工具输出。
 - 后端每两秒做增量检查并写入该 LearningOS 用户的会话收件箱与 Obsidian 原始记录。
-- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.2 后，用真实已登录账号完成线上历史接口验收。
+- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.3 后，用真实已登录账号完成线上历史接口验收。
 
 ## 系统边界
 
@@ -103,12 +111,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android：`release/AILearningOS-android-v1.6.0.apk`
-- Windows 后端：`release/AILearningOS-server-windows-x64-v4.2.zip`
-- 后端源码：`release/AILearningOS-server-source-v4.2.zip`
-- v4.2 部署与验收：[server/部署与验收-v4.2.md](server/部署与验收-v4.2.md)
+- Android：`release/AILearningOS-android-v1.7.0.apk`
+- Windows 后端：`release/AILearningOS-server-windows-x64-v4.3.zip`
+- 后端源码：`release/AILearningOS-server-source-v4.3.zip`
+- PA 验收对齐：[PA验收对齐.md](PA验收对齐.md)
 
-录音日记光盘柜需要 v1.6.0 客户端；飞书每日归档、登录防抖、Canvas、OSS 和额度自动回切需要在另一台电脑部署 v4.2 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
+Evidence Pack 需要 v1.7.0 客户端；飞书每日归档、登录防抖、Canvas、OSS、额度自动回切与学习记录账号隔离需要在另一台电脑部署 v4.3 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 

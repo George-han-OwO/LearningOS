@@ -78,6 +78,18 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('AI 分析'), findsOneWidget);
     expect(find.text('新建'), findsOneWidget);
+    expect(find.text('Evidence Pack'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('evidence-pack-entry')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('角色查询'), findsOneWidget);
+    expect(find.text('Learner'), findsWidgets);
+    expect(find.text('Coach'), findsOneWidget);
+    expect(find.text('MEL'), findsWidgets);
+    expect(find.byKey(const ValueKey('evidence-search')), findsOneWidget);
+    expect(find.byKey(const ValueKey('review-weekly')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('evidence-back')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('录音日记'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);

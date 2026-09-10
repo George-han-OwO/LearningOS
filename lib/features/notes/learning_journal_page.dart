@@ -5,6 +5,7 @@ import '../../design/app_theme.dart';
 import '../../design/app_widgets.dart';
 import '../../domain/learning_journal.dart';
 import '../../domain/models.dart';
+import 'evidence_pack_page.dart';
 import 'recording_shelf_page.dart';
 
 class LearningJournalPage extends StatelessWidget {
@@ -50,6 +51,20 @@ class LearningJournalPage extends StatelessWidget {
         children: [
           AppGroup(
             children: [
+              AppGroupRow(
+                key: const ValueKey('evidence-pack-entry'),
+                icon: CupertinoIcons.doc_text_search,
+                title: 'Evidence Pack',
+                subtitle: '搜索来源与时间 · Learner / Coach / MEL 角色视图',
+                onTap: () => Navigator.of(context).push(
+                  CupertinoPageRoute<void>(
+                    builder: (_) => AppScope(
+                      controller: controller,
+                      child: const EvidencePackPage(),
+                    ),
+                  ),
+                ),
+              ),
               AppGroupRow(
                 icon: CupertinoIcons.music_albums,
                 title: '录音日记',

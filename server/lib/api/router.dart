@@ -45,7 +45,7 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-09-09-feishu-recording-journal-v4.2',
+        'build': '2026-09-10-evidence-pack-privacy-v4.3',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
         'ai': 'codex-account-model-list-or-deepseek-v4-flash',
@@ -68,6 +68,8 @@ class ApiRouter {
         'feishu': 'recording-webhook-daily-journal-v2',
         'recording_daily': 'asia-shanghai-idempotent-obsidian-v1',
         'canvas': 'account-bound-readonly-courses-assignments-v1',
+        'evidence_pack': 'source-time-origin-role-review-v1',
+        'notes_authorization': 'bearer-owner-enforced-v1',
       });
     });
 
@@ -79,19 +81,10 @@ class ApiRouter {
     });
 
     router.get('/api/users/credential', (Request request) async {
-      final email = request.url.queryParameters['email'];
-      if (email == null || email.trim().isEmpty) {
-        return Response.badRequest(body: 'email is required');
-      }
-      final credential = await db.credentialForEmail(email);
-      if (credential == null) {
-        return Response.notFound('Not Found');
-      }
-      return _json({
-        'user': credential.user.toMap(),
-        'password_hash': credential.passwordHash,
-        'password_salt': credential.passwordSalt,
-      });
+      // Password verifiers are server-internal authentication material. Old
+      // clients once downloaded them for local verification; current clients
+      // use /api/auth/login and must never receive a hash or salt.
+      return _json({'error': '该旧版接口已停用，请使用服务器登录。'}, statusCode: 410);
     });
 
     router.get('/api/users/by-email', (Request request) async {
@@ -711,14 +704,20 @@ $transcript''',
     // ---------- Notes ----------
 
     router.get('/api/notes/<userId>', (Request request, String userId) async {
-      final notes = await db.notesForUser(int.parse(userId));
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
+      final notes = await db.notesForUser(id);
       return _json(notes.map((n) => n.toMap()).toList());
     });
 
     router.post('/api/notes/<userId>', (Request request, String userId) async {
+      final id = int.parse(userId);
+      final unauthorized = await _requireAuthenticatedUserForId(request, id);
+      if (unauthorized != null) return unauthorized;
       final payload = await _readJson(request);
       await db.addNote(
-        userId: int.parse(userId),
+        userId: id,
         title: (payload['title'] as String? ?? '').trim(),
         contentEnglish: (payload['content_en'] as String? ?? '').trim(),
         contentChinese: (payload['content_zh'] as String? ?? '').trim(),

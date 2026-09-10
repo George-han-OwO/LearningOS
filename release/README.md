@@ -2,17 +2,18 @@
 
 ## 当前版本
 
-- Android：`AILearningOS-android-v1.5.3.apk`
+- Android：`AILearningOS-android-v1.7.0.apk`
 - 应用显示名：`AILearningOS`
 - Android 包名：`com.georgegao.ai_study_os`（为覆盖旧版安装而保留）
-- 版本：`1.5.3`，versionCode `20`
-- 构建产物及 SHA-256：由 `v1.5.3` GitHub Release 的 `SHA256SUMS.txt` 给出
-- 最新后端：`AILearningOS-server-windows-x64-v4.0.zip`
-- 后端源码：`AILearningOS-server-source-v4.0.zip`
+- 版本：`1.7.0`，versionCode `24`
+- 构建产物及 SHA-256：由 `v1.7.0` GitHub Release 的 `SHA256SUMS.txt` 给出
+- 最新后端：`AILearningOS-server-windows-x64-v4.3.zip`
+- 后端源码：`AILearningOS-server-source-v4.3.zip`
 - ChatGPT 登录：保留 v3.9 的 durable binding 与恢复机制；每个 LearningOS 用户仍只有自己的隔离 Codex 登录态
 - Canvas：课程作业成为主页待办信息源，并按提交状态分到“今日待办”与“已完成”
 - AI 路由：默认手动选择；用户显式开启后，Codex 额度用尽才临时走 DeepSeek，并在官方五小时窗口恢复后由后端自动切回
 - Codex OSS：显式包含 `appServer` 等会话来源，只同步用户与助手文本，不保存 reasoning、命令或工具输出
+- Evidence Pack：搜索来源和时间，区分原始/学生反思/AI 内容，支持 Learner、Coach、MEL 视图与学生确认的周期复盘
 
 ## 历史版本
 
