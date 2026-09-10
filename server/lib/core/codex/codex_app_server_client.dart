@@ -274,10 +274,17 @@ class CodexRateLimitWindow {
   final double usedPercent;
   final int? windowDurationMinutes;
   final DateTime? resetsAt;
+
+  double get remainingPercent => (100 - usedPercent).clamp(0, 100);
 }
 
 class CodexQuota {
-  const CodexQuota({required this.planType, this.primary, this.secondary});
+  const CodexQuota({
+    required this.planType,
+    this.primary,
+    this.secondary,
+    this.rateLimitReachedType,
+  });
 
   factory CodexQuota.fromJson(Map<String, dynamic> json) {
     final value = json['rateLimits'] ?? json['rate_limits'] ?? json;
@@ -297,12 +304,18 @@ class CodexQuota {
       secondary: secondary is Map
           ? CodexRateLimitWindow.fromJson(Map<String, dynamic>.from(secondary))
           : null,
+      rateLimitReachedType: _stringValue(limits['rateLimitReachedType']),
     );
   }
 
   final String planType;
   final CodexRateLimitWindow? primary;
   final CodexRateLimitWindow? secondary;
+
+  /// App Server reports this explicitly when a ChatGPT rate-limit bucket is
+  /// reached. It is more reliable than trying to reverse-engineer an error
+  /// string after a turn has already failed.
+  final String? rateLimitReachedType;
 }
 
 class CodexThreadSummary {

@@ -235,13 +235,21 @@ class SettingsPage extends StatelessWidget {
   static Future<String?> _selectProvider(
     AppController controller,
     AiProvider provider,
-  ) => controller.saveAiSettings(
-    enabled: true,
-    apiKey: '',
-    model: controller.aiSettings.model,
-    provider: provider,
-    codexModel: controller.aiSettings.codexModel,
-  );
+  ) {
+    if (provider == AiProvider.deepSeek &&
+        !controller.aiSettings.apiKeyConfigured) {
+      return Future<String?>.value(
+        'DeepSeek 尚未配置可用 API Key。请先点“DeepSeek”保存并测试 Key，之后才能在 Codex 额度用尽时切换。',
+      );
+    }
+    return controller.saveAiSettings(
+      enabled: true,
+      apiKey: '',
+      model: controller.aiSettings.model,
+      provider: provider,
+      codexModel: controller.aiSettings.codexModel,
+    );
+  }
 
   static String _canvasSubtitle(AppController controller) {
     final state = controller.canvasTodoState;
@@ -419,6 +427,35 @@ class SettingsPage extends StatelessWidget {
             },
             child: const Text('刷新连接'),
           ),
+          for (final model in [...controller.codexModels]..sort())
+            CupertinoActionSheetAction(
+              onPressed: () async {
+                Navigator.of(sheetContext).pop();
+                final error = await controller.saveAiSettings(
+                  enabled: true,
+                  apiKey: '',
+                  model: controller.aiSettings.model,
+                  provider: AiProvider.codex,
+                  codexModel: model,
+                );
+                if (!pageContext.mounted) return;
+                await showAppMessage(
+                  pageContext,
+                  title: error == null ? 'Codex 模型已切换' : '无法切换模型',
+                  message:
+                      error ??
+                      '现在使用 $model。注意：同一 ChatGPT 账号下切换 Codex 模型不会产生新额度；额度用尽时请切换到 DeepSeek，或等待官方重置时间。',
+                  tone: error == null
+                      ? AppMessageTone.success
+                      : AppMessageTone.warning,
+                );
+              },
+              child: Text(
+                model == controller.aiSettings.codexModel
+                    ? '✓ 当前模型：$model'
+                    : '使用 $model',
+              ),
+            ),
           CupertinoActionSheetAction(
             isDestructiveAction: true,
             onPressed: () async {

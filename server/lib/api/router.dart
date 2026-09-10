@@ -45,11 +45,12 @@ class ApiRouter {
     router.get('/version', (Request request) {
       return _json({
         'name': 'AILearningOS server',
-        'build': '2026-09-10-evidence-pack-privacy-v4.3',
+        'build': '2026-09-10-codex-quota-fallback-v4.4',
         'auth': 'server-pbkdf2-login',
         'conversation_sync': '15-minute-or-23:00-second-latest-completed',
         'ai': 'codex-account-model-list-or-deepseek-v4-flash',
         'ai_provider_switch': 'manual-or-explicit-codex-quota-auto-return',
+        'codex_quota_fallback': 'all-windows-aware-deepseek-fallback-v2',
         'ai_features': {
           'word_enrichment': 'selected_provider',
           'conversation_notes': 'selected_provider',

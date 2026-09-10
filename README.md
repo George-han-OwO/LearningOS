@@ -62,7 +62,7 @@ AILearningOS 是一个聚焦“待办 + 单词 + Learning Journal”的学习工
 - 后端使用[官方 Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)中的 `thread/list` 与 `thread/turns/list` 读取历史，并显式包含 `appServer` 等来源，避免只依赖默认 `cli`/`vscode` 来源而漏会话。
 - 仅处理工作目录最后一级名为 `OSS` 的会话；只同步用户与助手文本，排除 reasoning、命令和工具输出。
 - 后端每两秒做增量检查并写入该 LearningOS 用户的会话收件箱与 Obsidian 原始记录。
-- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.3 后，用真实已登录账号完成线上历史接口验收。
+- 源码和模拟协议测试已经通过；实际服务器仍需部署 v4.4 后，用真实已登录账号完成线上历史接口验收。
 
 ## 系统边界
 
@@ -111,12 +111,12 @@ dart run bin/server.dart
 
 ## 发布产物
 
-- Android：`release/AILearningOS-android-v1.7.0.apk`
-- Windows 后端：`release/AILearningOS-server-windows-x64-v4.3.zip`
-- 后端源码：`release/AILearningOS-server-source-v4.3.zip`
+- Android：`release/AILearningOS-android-v1.7.1.apk`
+- Windows 后端：`release/AILearningOS-server-windows-x64-v4.4.zip`
+- 后端源码：`release/AILearningOS-server-source-v4.4.zip`
 - PA 验收对齐：[PA验收对齐.md](PA验收对齐.md)
 
-Evidence Pack 需要 v1.7.0 客户端；飞书每日归档、登录防抖、Canvas、OSS、额度自动回切与学习记录账号隔离需要在另一台电脑部署 v4.3 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
+Evidence Pack 和额度回退修复需要 v1.7.1 客户端；飞书每日归档、登录防抖、Canvas、OSS、额度自动回切与学习记录账号隔离需要在另一台电脑部署 v4.4 后端。ChatGPT-Codex 设备码登录仍只由后端完成。
 
 ## 数据与安全
 

@@ -430,6 +430,7 @@ class ServerCodexGateway {
       return {
         'available': true,
         'plan_type': quota.planType,
+        'rate_limit_reached_type': quota.rateLimitReachedType,
         ..._quotaWindow('primary', quota.primary),
         ..._quotaWindow('secondary', quota.secondary),
         'updated_at': DateTime.now().toUtc().toIso8601String(),
@@ -437,9 +438,11 @@ class ServerCodexGateway {
     });
   }
 
-  /// Marks DeepSeek as the temporary route until Codex's primary (normally
-  /// five-hour) usage window resets. The exact server-provided reset instant
-  /// is preferred over calculating five hours on the phone.
+  /// Marks DeepSeek as the temporary route until every exhausted Codex usage
+  /// window has reset. The App Server may report both a short and a longer
+  /// window. Returning after only the short one reset causes a useless loop:
+  /// the backend switches to Codex, receives the still-exhausted long-window
+  /// error, then switches back again.
   Future<DateTime> scheduleReturnAfterQuotaReset(AppUser user) async {
     var resumeAt = DateTime.now().toUtc().add(const Duration(hours: 5));
     try {
@@ -447,9 +450,9 @@ class ServerCodexGateway {
         user,
         (client) => client.readRateLimits(),
       );
-      final advertised = quota.primary?.resetsAt;
-      if (advertised != null && advertised.isAfter(DateTime.now().toUtc())) {
-        resumeAt = advertised.toUtc();
+      final advertised = _nextQuotaProbeAt(quota, DateTime.now().toUtc());
+      if (advertised != null) {
+        resumeAt = advertised;
       }
     } catch (_) {
       // A quota error may have closed the process. The conservative five-hour
@@ -460,7 +463,8 @@ class ServerCodexGateway {
   }
 
   /// Runs on the backend even while the mobile app is closed. A due account
-  /// returns to Codex only after App Server confirms non-zero primary quota.
+  /// returns to Codex only after App Server confirms that no reported window
+  /// is exhausted.
   Future<int> restoreDueCodexProviders() async {
     if (!enabled) return 0;
     var restored = 0;
@@ -473,18 +477,14 @@ class ServerCodexGateway {
           user,
           (client) => client.readRateLimits(),
         );
-        final primary = quota.primary;
-        final remaining = primary == null
-            ? null
-            : (100 - primary.usedPercent).clamp(0, 100);
-        if (remaining != null && remaining > 0) {
+        if (_quotaCanRunCodex(quota)) {
           await _database.restoreCodexProvider(userId);
           restored++;
           continue;
         }
         await _database.scheduleCodexReturn(
           userId,
-          primary?.resetsAt?.toUtc() ?? now.add(const Duration(minutes: 1)),
+          _nextQuotaProbeAt(quota, now) ?? now.add(const Duration(minutes: 1)),
         );
       } catch (_) {
         await _database.scheduleCodexReturn(
@@ -501,8 +501,53 @@ class ServerCodexGateway {
     return text.contains('quota') ||
         text.contains('rate limit') ||
         text.contains('usage limit') ||
+        text.contains('limit reached') ||
+        text.contains('reached the limit') ||
+        text.contains('usage cap') ||
+        text.contains('out of credits') ||
+        text.contains('too many requests') ||
+        text.contains('resource exhausted') ||
         text.contains('额度') ||
         text.contains('429');
+  }
+
+  static bool _quotaCanRunCodex(CodexQuota quota) {
+    final reached = quota.rateLimitReachedType?.trim();
+    if (reached != null && reached.isNotEmpty) return false;
+    final windows = [
+      quota.primary,
+      quota.secondary,
+    ].whereType<CodexRateLimitWindow>();
+    return windows.isNotEmpty &&
+        windows.every((window) => window.remainingPercent > 0);
+  }
+
+  static DateTime? _nextQuotaProbeAt(CodexQuota quota, DateTime now) {
+    final windows = [
+      quota.primary,
+      quota.secondary,
+    ].whereType<CodexRateLimitWindow>().toList(growable: false);
+    var candidates = windows
+        .where((window) => window.remainingPercent <= 0)
+        .map((window) => window.resetsAt?.toUtc())
+        .whereType<DateTime>()
+        .where((resetAt) => resetAt.isAfter(now))
+        .toList(growable: false);
+    // The server can report an explicit reached type before its rounded
+    // usedPercent reaches 100. In that situation use the advertised windows
+    // rather than probing every minute.
+    if (candidates.isEmpty &&
+        quota.rateLimitReachedType?.trim().isNotEmpty == true) {
+      candidates = windows
+          .map((window) => window.resetsAt?.toUtc())
+          .whereType<DateTime>()
+          .where((resetAt) => resetAt.isAfter(now))
+          .toList(growable: false);
+    }
+    if (candidates.isEmpty) return null;
+    // All exhausted windows need to be usable, so wait for the final reset.
+    candidates.sort();
+    return candidates.last;
   }
 
   Future<Map<String, Object?>> readHistory(
@@ -568,7 +613,7 @@ class ServerCodexGateway {
     AiConnectionSettings settings,
     List<ParsedWord> words,
   ) async {
-    return _withUserClient(
+    final report = await _withUserClient(
       user,
       (client) => const CodexAiService().enrichWordsWithClient(
         client,
@@ -576,6 +621,14 @@ class ServerCodexGateway {
         words: words,
       ),
     );
+    // CodexAiService intentionally converts ordinary provider errors into a
+    // per-batch warning so a word import can preserve local data. A quota
+    // warning is different: callers must see it to switch this account to its
+    // already configured DeepSeek fallback and schedule the official reset.
+    if (report.warning != null && isQuotaFailure(report.warning!)) {
+      throw StateError(report.warning!);
+    }
+    return report;
   }
 
   Future<String> completeText(

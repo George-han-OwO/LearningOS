@@ -2,6 +2,14 @@
 
 本文件只记录能够由现有源码、安装包、部署包或项目文档验证的内容。早期版本只保留了构建产物、没有对应的源码快照，因此不会虚构源码差异；这些版本会在 GitHub Release 中标记为“历史构建归档”。
 
+## 1.7.1 / Server v4.4 — 2026-09-10
+
+- 修复 Codex 额度耗尽后的回退：识别 App Server 的 `reached the limit`、`resource exhausted`、`too many requests` 等真实限额信号，自动切入已配置的 DeepSeek。
+- 单词 AI 队列不再把 Codex 的额度错误吞成普通 warning；检测到限额后会持久化切换为 DeepSeek，并按官方重置时间检查回切。
+- 自动回切同时检查短周期和长周期；任一限额窗口仍耗尽时继续留在 DeepSeek，避免短周期重置后反复切回失败。
+- Settings 现在可列出并选择官方返回的 Codex 模型；明确提示同一 ChatGPT 账号内换 Codex 模型不会产生新额度。
+- 未保存 DeepSeek API Key 时，手动选择 DeepSeek 会给出可操作提示，不再显示“切换成功”后才在任务中失败。
+
 ## 1.7.0 / Server v4.3 — 2026-09-10
 
 - Journal 新增 `Evidence Pack`，统一索引 Learning Journal、飞书录音与 Canvas 作业证据。

@@ -65,6 +65,82 @@ void main() {
       expect(restored.codexResumeAt, isNull);
     },
   );
+
+  test('recognizes App Server wording when Codex has reached a usage cap', () {
+    expect(
+      ServerCodexGateway.isQuotaFailure(
+        StateError('You have reached the limit for this Codex usage window.'),
+      ),
+      isTrue,
+    );
+    expect(
+      ServerCodexGateway.isQuotaFailure(
+        StateError('resource exhausted: too many requests'),
+      ),
+      isTrue,
+    );
+    expect(
+      ServerCodexGateway.isQuotaFailure(
+        StateError('selected model is unavailable'),
+      ),
+      isFalse,
+    );
+  });
+
+  test(
+    'does not restore Codex while its longer quota window is still full',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'ailo-long-window-route-',
+      );
+      final database = await AppDatabase.open(
+        dataDirectory: directory,
+        secretVault: SecretVault.forTesting(List<int>.filled(32, 18)),
+      );
+      final user = await database.createUser(
+        email: 'long-window-owner@example.test',
+        displayName: 'Long Window Owner',
+        passwordHash: '',
+        passwordSalt: '',
+      );
+      await database.saveAiSettings(
+        user.id,
+        const AiConnectionSettings(
+          enabled: true,
+          apiKey: 'deepseek-key-for-fallback',
+          model: AiConnectionSettings.defaultModel,
+          provider: AiProvider.deepSeek,
+          autoReturnToCodex: true,
+        ),
+      );
+      await database.bindCodexHome(
+        userId: user.id,
+        homeId: 'test_codex_home_long_window_12345',
+      );
+      await database.scheduleCodexReturn(
+        user.id,
+        DateTime.now().toUtc().subtract(const Duration(seconds: 1)),
+      );
+      final gateway = _Gateway(
+        database,
+        clientFactory: (_) async => _LongWindowQuotaClient(),
+      );
+      addTearDown(() async {
+        await gateway.dispose();
+        await database.close();
+        await directory.delete(recursive: true);
+      });
+
+      expect(await gateway.restoreDueCodexProviders(), 0);
+      final unchanged = await database.aiSettings(user.id);
+      expect(unchanged.provider, AiProvider.deepSeek);
+      expect(
+        unchanged.codexResumeAt,
+        isNotNull,
+        reason: 'The longer exhausted window must delay the next Codex retry.',
+      );
+    },
+  );
 }
 
 class _Gateway extends ServerCodexGateway {
@@ -85,6 +161,29 @@ class _QuotaClient extends CodexAppServerClient {
       usedPercent: 12,
       windowDurationMinutes: 300,
       resetsAt: DateTime.now().toUtc().add(const Duration(hours: 5)),
+    ),
+  );
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _LongWindowQuotaClient extends CodexAppServerClient {
+  @override
+  bool get isInitialized => true;
+
+  @override
+  Future<CodexQuota> readRateLimits() async => CodexQuota(
+    planType: 'plus',
+    primary: CodexRateLimitWindow(
+      usedPercent: 15,
+      windowDurationMinutes: 300,
+      resetsAt: DateTime.now().toUtc().add(const Duration(hours: 4)),
+    ),
+    secondary: CodexRateLimitWindow(
+      usedPercent: 100,
+      windowDurationMinutes: 10080,
+      resetsAt: DateTime.now().toUtc().add(const Duration(days: 5)),
     ),
   );
 

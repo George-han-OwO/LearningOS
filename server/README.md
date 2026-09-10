@@ -2,7 +2,7 @@
 
 这是 AILearningOS 的服务端，负责账号隔离的 Codex/DeepSeek AI 请求、词库、学习笔记、飞书录音回调，以及 Obsidian vault 写入。
 
-v4.3 新增 PA Evidence Pack 能力声明和学习记录强制账号隔离：客户端把 Journal、飞书录音和 Canvas 作业汇入可搜索证据包，服务端拒绝匿名或跨账号读写学习记录。v4.2 的飞书录音每日归档、账号隔离 Codex 登录防抖、Canvas 首页待办、Codex OSS 会话来源读取和五小时额度自动回切全部保留。部署与验收见 [部署与验收-v4.3.md](部署与验收-v4.3.md)。
+v4.4 修复 ChatGPT-Codex 额度耗尽时的 DeepSeek 回退：识别官方 App Server 的限额信号，单词队列不再吞掉额度错误，并同时检查短/长周期后才回切 Codex。v4.3 的 PA Evidence Pack、学习记录账号隔离、飞书录音每日归档、账号隔离 Codex 登录防抖、Canvas 首页待办和 OSS 会话来源读取全部保留。部署与验收见 [部署与验收-v4.4.md](部署与验收-v4.4.md)。
 
 v3.8 新增 Canvas LMS 本人账号的只读连接、在读课程和作业 API，令牌按账号加密保存。部署、接口与限制见 [Canvas接入.md](Canvas接入.md)。Canvas 不依赖 Codex CLI；先使用 Canvas 的服务器可通过 `start-server.ps1 -DisableCodex` 启动。
 
